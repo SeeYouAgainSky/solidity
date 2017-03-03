@@ -2501,6 +2501,20 @@ BOOST_AUTO_TEST_CASE(storage_assign_to_different_local_variable)
 	CHECK_ERROR(sourceCode, TypeError, "");
 }
 
+BOOST_AUTO_TEST_CASE(uninitialized_mapping_variable)
+{
+	char const* sourceCode = R"(
+		contract C {
+			uint[] data;
+			function f() {
+				var x = data;
+				delete x;
+			}
+		}
+	)";
+	CHECK_ERROR(sourceCode, TypeError, "");
+}
+
 BOOST_AUTO_TEST_CASE(no_delete_on_storage_pointers)
 {
 	char const* sourceCode = R"(
