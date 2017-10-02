@@ -20,6 +20,8 @@ For example, suppose we want our contract to
 accept one kind of external calls with two integers, we would write
 something like::
 
+    pragma solidity ^0.4.0;
+
     contract Simple {
         function taker(uint _a, uint _b) {
             // do something with _a and _b.
@@ -33,6 +35,8 @@ The output parameters can be declared with the same syntax after the
 ``returns`` keyword. For example, suppose we wished to return two results:
 the sum and the product of the two given integers, then we would
 write::
+
+    pragma solidity ^0.4.0;
 
     contract Simple {
         function arithmetics(uint _a, uint _b) returns (uint o_sum, uint o_product) {
@@ -91,6 +95,8 @@ Internal Function Calls
 Functions of the current contract can be called directly ("internally"), also recursively, as seen in
 this nonsensical example::
 
+    pragma solidity ^0.4.0;
+
     contract C {
         function g(uint a) returns (uint ret) { return f(); }
         function f() returns (uint ret) { return g(7) + f(); }
@@ -113,13 +119,14 @@ actual contract has not been created yet.
 Functions of other contracts have to be called externally. For an external call,
 all function arguments have to be copied to memory.
 
-When calling functions
-of other contracts, the amount of Wei sent with the call and the gas can be specified::
+When calling functions of other contracts, the amount of Wei sent with the call and
+the gas can be specified with special options ``.value()`` and ``.gas()``, respectively::
+
+    pragma solidity ^0.4.0;
 
     contract InfoFeed {
         function info() payable returns (uint ret) { return 42; }
     }
-
 
     contract Consumer {
         InfoFeed feed;
@@ -127,8 +134,8 @@ of other contracts, the amount of Wei sent with the call and the gas can be spec
         function callFeed() { feed.info.value(10).gas(800)(); }
     }
 
-The modifier ``payable`` has to be used for ``info``, because otherwise,
-we would not be able to send Ether to it in the call ``feed.info.value(10).gas(800)()``.
+The modifier ``payable`` has to be used for ``info``, because otherwise, the `.value()`
+option would not be available.
 
 Note that the expression ``InfoFeed(addr)`` performs an explicit type conversion stating
 that "we know that the type of the contract at the given address is ``InfoFeed``" and
@@ -173,7 +180,9 @@ parameters from the function declaration, but can be in arbitrary order.
     pragma solidity ^0.4.0;
 
     contract C {
-        function f(uint key, uint value) { ... }
+        function f(uint key, uint value) {
+            // ...
+        }
 
         function g() {
             // named arguments
@@ -197,7 +206,7 @@ Those names will still be present on the stack, but they are inaccessible.
             return k;
         }
     }
-    
+
 
 .. index:: ! new, contracts;creating
 
@@ -221,7 +230,6 @@ creation-dependencies are not possible.
         }
     }
 
-
     contract C {
         D d = new D(4); // will be executed as part of C's constructor
 
@@ -229,16 +237,17 @@ creation-dependencies are not possible.
             D newD = new D(arg);
         }
 
-        function createAndEndowD(uint arg, uint amount) {
+        function createAndEndowD(uint arg, uint amount) payable {
             // Send ether along with the creation
             D newD = (new D).value(amount)(arg);
         }
     }
 
-As seen in the example, it is possible to forward Ether to the creation,
-but it is not possible to limit the amount of gas. If the creation fails
-(due to out-of-stack, not enough balance or other problems), an exception
-is thrown.
+As seen in the example, it is possible to forward Ether while creating
+an instance of ``D`` using the ``.value()`` option, but it is not possible
+to limit the amount of gas.
+If the creation fails (due to out-of-stack, not enough balance or other problems),
+an exception is thrown.
 
 Order of Evaluation of Expressions
 ==================================
@@ -260,6 +269,8 @@ Destructuring Assignments and Returning Multiple Values
 -------------------------------------------------------
 
 Solidity internally allows tuple types, i.e. a list of objects of potentially different types whose size is a constant at compile-time. Those tuples can be used to return multiple values at the same time and also assign them to multiple variables (or LValues in general) at the same time::
+
+    pragma solidity ^0.4.0;
 
     contract C {
         uint[] data;
@@ -313,6 +324,8 @@ This happens because Solidity inherits its scoping rules from JavaScript.
 This is in contrast to many languages where variables are only scoped where they are declared until the end of the semantic block.
 As a result, the following code is illegal and cause the compiler to throw an error, ``Identifier already declared``::
 
+    // This will not compile
+
     pragma solidity ^0.4.0;
 
     contract ScopingErrors {
@@ -361,47 +374,76 @@ As a result, the following code is legal, despite being poorly written::
         return bar;// returns 5
     }
 
-.. index:: ! exception, ! throw
+.. index:: ! exception, ! throw, ! assert, ! require, ! revert
 
-Exceptions
-==========
+Error handling: Assert, Require, Revert and Exceptions
+======================================================
 
-There are some cases where exceptions are thrown automatically (see below). You can use the ``throw`` instruction to throw an exception manually. The effect of an exception is that the currently executing call is stopped and reverted (i.e. all changes to the state and balances are undone) and the exception is also "bubbled up" through Solidity function calls (exceptions are ``send`` and the low-level functions ``call``, ``delegatecall`` and ``callcode``, those return ``false`` in case of an exception).
+Solidity uses state-reverting exceptions to handle errors. Such an exception will undo all changes made to the
+state in the current call (and all its sub-calls) and also flag an error to the caller.
+The convenience functions ``assert`` and ``require`` can be used to check for conditions and throw an exception
+if the condition is not met. The ``assert`` function should only be used to test for internal errors, and to check invariants.
+The ``require`` function should be used to ensure valid conditions, such as inputs, or contract state variables are met, or to validate return values from calls to external contracts.
+If used properly, analysis tools can evaluate your contract to identify the conditions and function calls which will reach a failing ``assert``. Properly functioning code should never reach a failing assert statement; if this happens there is a bug in your contract which you should fix.
+
+There are two other ways to trigger exceptions: The ``revert`` function can be used to flag an error and
+revert the current call. In the future it might be possible to also include details about the error
+in a call to ``revert``. The ``throw`` keyword can also be used as an alternative to ``revert()``.
+
+.. note::
+    From version 0.4.13 the ``throw`` keyword is deprecated and will be phased out in the future.
+
+When exceptions happen in a sub-call, they "bubble up" (i.e. exceptions are rethrown) automatically. Exceptions to this rule are ``send``
+and the low-level functions ``call``, ``delegatecall`` and ``callcode`` -- those return ``false`` in case
+of an exception instead of "bubbling up".
+
+.. warning::
+    The low-level ``call``, ``delegatecall`` and ``callcode`` will return success if the calling account is non-existent, as part of the design of EVM. Existence must be checked prior to calling if desired.
 
 Catching exceptions is not yet possible.
 
-In the following example, we show how ``throw`` can be used to easily revert an Ether transfer and also how to check the return value of ``send``::
+In the following example, you can see how ``require`` can be used to easily check conditions on inputs
+and how ``assert`` can be used for internal error checking::
 
     pragma solidity ^0.4.0;
 
     contract Sharer {
         function sendHalf(address addr) payable returns (uint balance) {
-            if (!addr.send(msg.value / 2))
-                throw; // also reverts the transfer to Sharer
+            require(msg.value % 2 == 0); // Only allow even numbers
+            uint balanceBeforeTransfer = this.balance;
+            addr.transfer(msg.value / 2);
+            // Since transfer throws an exception on failure and
+            // cannot call back here, there should be no way for us to
+            // still have half of the money.
+            assert(this.balance == balanceBeforeTransfer - msg.value / 2);
             return this.balance;
         }
     }
 
-Currently, Solidity automatically generates a runtime exception in the following situations:
+An ``assert``-style exception is generated in the following situations:
 
 #. If you access an array at a too large or negative index (i.e. ``x[i]`` where ``i >= x.length`` or ``i < 0``).
 #. If you access a fixed-length ``bytesN`` at a too large or negative index.
-#. If you call a function via a message call but it does not finish properly (i.e. it runs out of gas, has no matching function, or throws an exception itself), except when a low level operation ``call``, ``send``, ``delegatecall`` or ``callcode`` is used.  The low level operations never throw exceptions but indicate failures by returning ``false``.
-#. If you create a contract using the ``new`` keyword but the contract creation does not finish properly (see above for the definition of "not finish properly").
 #. If you divide or modulo by zero (e.g. ``5 / 0`` or ``23 % 0``).
 #. If you shift by a negative amount.
 #. If you convert a value too big or negative into an enum type.
+#. If you call a zero-initialized variable of internal function type.
+#. If you call ``assert`` with an argument that evaluates to false.
+
+A ``require``-style exception is generated in the following situations:
+
+#. Calling ``throw``.
+#. Calling ``require`` with an argument that evaluates to ``false``.
+#. If you call a function via a message call but it does not finish properly (i.e. it runs out of gas, has no matching function, or throws an exception itself), except when a low level operation ``call``, ``send``, ``delegatecall`` or ``callcode`` is used.  The low level operations never throw exceptions but indicate failures by returning ``false``.
+#. If you create a contract using the ``new`` keyword but the contract creation does not finish properly (see above for the definition of "not finish properly").
 #. If you perform an external function call targeting a contract that contains no code.
 #. If your contract receives Ether via a public function without ``payable`` modifier (including the constructor and the fallback function).
 #. If your contract receives Ether via a public getter function.
-#. If you call a zero-initialized variable of internal function type.
 #. If a ``.transfer()`` fails.
 
-While a user-provided exception is generated in the following situations:
-#. Calling ``throw``.
-
-Internally, Solidity performs a revert operation (instruction ``0xfd``) when a user-provided exception is thrown. In contrast, it performs an invalid operation
-(instruction ``0xfe``) if a runtime exception is encountered. In both cases, this causes
-the EVM to revert all changes made to the state. The reason for this is that there is no safe way to continue execution, because an expected effect
+Internally, Solidity performs a revert operation (instruction ``0xfd``) for a ``require``-style exception and executes an invalid operation
+(instruction ``0xfe``) to throw an ``assert``-style exception. In both cases, this causes
+the EVM to revert all changes made to the state. The reason for reverting is that there is no safe way to continue execution, because an expected effect
 did not occur. Because we want to retain the atomicity of transactions, the safest thing to do is to revert all changes and make the whole transaction
-(or at least call) without effect.
+(or at least call) without effect. Note that ``assert``-style exceptions consume all gas available to the call, while
+``require``-style exceptions will not consume any gas starting from the Metropolis release.

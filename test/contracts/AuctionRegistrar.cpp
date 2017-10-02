@@ -23,7 +23,6 @@
 #include <string>
 #include <tuple>
 #include <boost/test/unit_test.hpp>
-#include <libdevcore/ABI.h>
 #include <test/libsolidity/SolidityExecutionFramework.h>
 
 using namespace std;
@@ -223,7 +222,8 @@ protected:
 		{
 			m_compiler.reset(false);
 			m_compiler.addSource("", registrarCode);
-			ETH_TEST_REQUIRE_NO_THROW(m_compiler.compile(m_optimize, m_optimizeRuns), "Compiling contract failed");
+			m_compiler.setOptimiserSettings(m_optimize, m_optimizeRuns);
+			BOOST_REQUIRE_MESSAGE(m_compiler.compile(), "Compiling contract failed");
 			s_compiledRegistrar.reset(new bytes(m_compiler.object("GlobalRegistrar").bytecode));
 		}
 		sendMessage(*s_compiledRegistrar, true);

@@ -1,22 +1,208 @@
-### 0.4.10 (unreleased)
+### 0.4.18 (unreleased)
 
 Features:
- * Add ``assert(condition)``, which throws if condition is false.
+ * Parser: Better error message for unexpected trailing comma in parameter lists.
+ * Syntax Checker: Unary ``+`` is now a syntax error as experimental 0.5.0 feature.
+
+Bugfixes:
+ * Parser: Fix source location of VariableDeclarationStatement.
+ * Type Checker: Properly check array length and don't rely on an assertion in code generation.
+ * Type Checker: Properly support overwriting members inherited from ``address`` in a contract
+   (such as ``balance``, ``transfer``, etc.)
+
+### 0.4.17 (2017-09-21)
+
+Features:
+ * Assembly Parser: Support multiple assignment (``x, y := f()``).
+ * Code Generator: Keep a single copy of encoding functions when using the experimental "ABIEncoderV2".
+ * Code Generator: Partial support for passing ``structs`` as arguments and return parameters (requires ``pragma experimental ABIEncoderV2;`` for now).
+ * General: Support ``pragma experimental "v0.5.0";`` to activate upcoming breaking changes.
+ * General: Added ``.selector`` member on external function types to retrieve their signature.
+ * Optimizer: Add new optimization step to remove unused ``JUMPDEST``s.
+ * Static Analyzer: Warn when using deprecated builtins ``sha3`` and ``suicide``
+   (replaced by ``keccak256`` and ``selfdestruct``, introduced in 0.4.2 and 0.2.0, respectively).
+ * Syntax Checker: Warn if no visibility is specified on contract functions.
+ * Type Checker: Display helpful warning for unused function arguments/return parameters.
+ * Type Checker: Do not show the same error multiple times for events.
+ * Type Checker: Greatly reduce the number of duplicate errors shown for duplicate constructors and functions.
+ * Type Checker: Warn on using literals as tight packing parameters in ``keccak256``, ``sha3``, ``sha256`` and ``ripemd160``.
+ * Type Checker: Enforce ``view`` and ``pure``.
+ * Type Checker: Enforce ``view`` / ``constant`` with error as experimental 0.5.0 feature.
+ * Type Checker: Enforce fallback functions to be ``external`` as experimental 0.5.0 feature.
+
+Bugfixes:
+ * ABI JSON: Include all overloaded events.
+ * Parser: Crash fix related to parseTypeName.
+ * Type Checker: Allow constant byte arrays.
+
+### 0.4.16 (2017-08-24)
+
+Features:
+ * ABI JSON: Include new field ``stateMutability`` with values ``pure``, ``view``,
+   ``nonpayable`` and ``payable``.
+ * Analyzer: Experimental partial support for Z3 SMT checker ("SMTChecker").
+ * Build System: Shared libraries (``libdevcore``, ``libevmasm``, ``libsolidity``
+   and ``liblll``) are no longer produced during the build process.
+ * Code generator: Experimental new implementation of ABI encoder that can
+   encode arbitrarily nested arrays ("ABIEncoderV2")
+ * Metadata: Store experimental flag in metadata CBOR.
+ * Parser: Display previous visibility specifier in error if multiple are found.
+ * Parser: Introduce ``pure`` and ``view`` keyword for functions,
+   ``constant`` remains an alias for ``view`` and pureness is not enforced yet,
+   so use with care.
+ * Static Analyzer: Warn about large storage structures.
+ * Syntax Checker: Support ``pragma experimental <feature>;`` to turn on
+   experimental features.
+ * Type Checker: More detailed error message for invalid overrides.
+ * Type Checker: Warn about shifting a literal.
+
+Bugfixes:
+ * Assembly Parser: Be more strict about number literals.
+ * Assembly Parser: Limit maximum recursion depth.
+ * Parser: Enforce commas between array and tuple elements.
+ * Parser: Limit maximum recursion depth.
+ * Type Checker: Crash fix related to ``using``.
+ * Type Checker: Disallow constructors in libraries.
+ * Type Checker: Reject the creation of interface contracts using the ``new`` statement.
+
+### 0.4.15 (2017-08-08)
+
+Features:
+ * Type Checker: Show unimplemented function if trying to instantiate an abstract class.
+
+Bugfixes:
+ * Code Generator: ``.delegatecall()`` should always return execution outcome.
+ * Code Generator: Provide "new account gas" for low-level ``callcode`` and ``delegatecall``.
+ * Type Checker: Constructors must be implemented if declared.
+ * Type Checker: Disallow the ``.gas()`` modifier on ``ecrecover``, ``sha256`` and ``ripemd160``.
+ * Type Checker: Do not mark overloaded functions as shadowing other functions.
+ * Type Checker: Internal library functions must be implemented if declared.
+
+### 0.4.14 (2017-07-31)
+
+Features:
+ * C API (``jsonCompiler``): Export the ``license`` method.
+ * Code Generator: Optimise the fallback function, by removing a useless jump.
+ * Inline Assembly: Show useful error message if trying to access calldata variables.
+ * Inline Assembly: Support variable declaration without initial value (defaults to 0).
+ * Metadata: Only include files which were used to compile the given contract.
+ * Type Checker: Disallow value transfers to contracts without a payable fallback function.
+ * Type Checker: Include types in explicit conversion error message.
+ * Type Checker: Raise proper error for arrays too large for ABI encoding.
+ * Type checker: Warn if using ``this`` in a constructor.
+ * Type checker: Warn when existing symbols, including builtins, are overwritten.
+
+Bugfixes:
+ * Code Generator: Properly clear return memory area for ecrecover.
+ * Type Checker: Fix crash for some assignment to non-lvalue.
+ * Type Checker: Fix invalid "specify storage keyword" warning for reference members of structs.
+ * Type Checker: Mark modifiers as internal.
+ * Type Checker: Re-allow multiple mentions of the same modifier per function.
+
+
+### 0.4.13 (2017-07-06)
+
+Features:
+ * Syntax Checker: Deprecated "throw" in favour of require(), assert() and revert().
+ * Type Checker: Warn if a local storage reference variable does not explicitly use the keyword ``storage``.
+
+Bugfixes:
+ * Code Generator: Correctly unregister modifier variables.
+ * Compiler Interface: Only output AST if analysis was successful.
+ * Error Output: Do not omit the error type.
+
+### 0.4.12 (2017-07-03)
+
+Features:
+ * Assembly: Add ``CREATE2`` (EIP86), ``STATICCALL`` (EIP214), ``RETURNDATASIZE`` and ``RETURNDATACOPY`` (EIP211) instructions.
+ * Assembly: Display auxiliary data in the assembly output.
+ * Assembly: Renamed ``SHA3`` to ``KECCAK256``.
+ * AST: export all attributes to JSON format.
+ * C API (``jsonCompiler``): Use the Standard JSON I/O internally.
+ * Code Generator: Added the Whiskers template system.
+ * Inline Assembly: ``for`` and ``switch`` statements.
+ * Inline Assembly: Function definitions and function calls.
+ * Inline Assembly: Introduce ``keccak256`` as an opcode. ``sha3`` is still a valid alias.
+ * Inline Assembly: Present proper error message when not supplying enough arguments to a functional
+   instruction.
+ * Inline Assembly: Warn when instructions shadow Solidity variables.
+ * Inline Assembly: Warn when using ``jump``s.
+ * Remove obsolete Why3 output.
+ * Type Checker: Enforce strict UTF-8 validation.
+ * Type Checker: Warn about copies in storage that might overwrite unexpectedly.
+ * Type Checker: Warn about type inference from literal numbers.
+ * Static Analyzer: Warn about deprecation of ``callcode``.
+
+Bugfixes:
+ * Assembly: mark ``MLOAD`` to have side effects in the optimiser.
+ * Code Generator: Fix ABI encoding of empty literal string.
+ * Code Generator: Fix negative stack size checks.
+ * Code generator: Use ``REVERT`` instead of ``INVALID`` for generated input validation routines.
+ * Inline Assembly: Enforce function arguments when parsing functional instructions.
+ * Optimizer: Disallow optimizations involving ``MLOAD`` because it changes ``MSIZE``.
+ * Static Analyzer: Unused variable warnings no longer issued for variables used inside inline assembly.
+ * Type Checker: Fix address literals not being treated as compile-time constants.
+ * Type Checker: Fixed crash concerning non-callable types.
+ * Type Checker: Fixed segfault with constant function parameters
+ * Type Checker: Disallow comparisons between mapping and non-internal function types.
+ * Type Checker: Disallow invoking the same modifier multiple times.
+ * Type Checker: Do not treat strings that look like addresses as addresses.
+ * Type Checker: Support valid, but incorrectly rejected UTF-8 sequences.
+
+### 0.4.11 (2017-05-03)
+
+Features:
+ * Implement the Standard JSON Input / Output API
+ * Support ``interface`` contracts.
+ * C API (``jsonCompiler``): Add the ``compileStandard()`` method to process a Standard JSON I/O.
+ * Commandline interface: Add the ``--standard-json`` parameter to process a Standard JSON I/O.
+ * Commandline interface: Support ``--allow-paths`` to define trusted import paths. Note: the
+   path(s) of the supplied source file(s) is always trusted.
+ * Inline Assembly: Storage variable access using ``_slot`` and ``_offset`` suffixes.
+ * Inline Assembly: Disallow blocks with unbalanced stack.
+ * Static analyzer: Warn about statements without effects.
+ * Static analyzer: Warn about unused local variables, parameters, and return parameters.
+ * Syntax checker: issue deprecation warning for unary '+'
+
+Bugfixes:
+ * Assembly output: Implement missing AssemblyItem types.
+ * Compiler interface: Fix a bug where source indexes could be inconsistent between Solidity compiled
+   with different compilers (clang vs. gcc) or compiler settings. The bug was visible in AST
+   and source mappings.
+ * Gas Estimator: Reflect the most recent fee schedule.
+ * Type system: Contract inheriting from base with unimplemented constructor should be abstract.
+ * Optimizer: Number representation bug in the constant optimizer fixed.
+
+### 0.4.10 (2017-03-15)
+
+Features:
+ * Add ``assert(condition)``, which throws if condition is false (meant for internal errors).
+ * Add ``require(condition)``, which throws if condition is false (meant for invalid input).
+ * Commandline interface: Do not overwrite files unless forced.
  * Introduce ``.transfer(value)`` for sending Ether.
  * Code generator: Support ``revert()`` to abort with rolling back, but not consuming all gas.
  * Inline assembly: Support ``revert`` (EIP140) as an opcode.
+ * Parser: Support scientific notation in numbers (e.g. ``2e8`` and ``200e-2``).
  * Type system: Support explicit conversion of external function to address.
+ * Type system: Warn if base of exponentiation is literal (result type might be unexpected).
+ * Type system: Warn if constant state variables are not compile-time constants.
 
 Bugfixes:
  * Commandline interface: Always escape filenames (replace ``/``, ``:`` and ``.`` with ``_``).
  * Commandline interface: Do not try creating paths ``.`` and ``..``.
+ * Commandline interface: Allow long library names.
+ * Parser: Disallow octal literals.
  * Type system: Fix a crash caused by continuing on fatal errors in the code.
+ * Type system: Disallow compound assignment for tuples.
+ * Type system: Detect cyclic dependencies between constants.
  * Type system: Disallow arrays with negative length.
  * Type system: Fix a crash related to invalid binary operators.
  * Type system: Disallow ``var`` declaration with empty tuple type.
  * Type system: Correctly convert function argument types to pointers for member functions.
+ * Type system: Move privateness of constructor into AST itself.
  * Inline assembly: Charge one stack slot for non-value types during analysis.
  * Assembly output: Print source location before the operation it refers to instead of after.
+ * Optimizer: Stop trying to optimize tricky constants after a while.
 
 ### 0.4.9 (2017-01-31)
 

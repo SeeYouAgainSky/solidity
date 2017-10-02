@@ -24,7 +24,7 @@
 
 #include <functional>
 
-#include "../ExecutionFramework.h"
+#include <test/ExecutionFramework.h>
 
 #include <libsolidity/interface/CompilerStack.h>
 #include <libsolidity/interface/Exceptions.h>
@@ -56,7 +56,9 @@ public:
 		std::string sourceCode = "pragma solidity >=0.0;\n" + _sourceCode;
 		m_compiler.reset(false);
 		m_compiler.addSource("", sourceCode);
-		if (!m_compiler.compile(m_optimize, m_optimizeRuns, _libraryAddresses))
+		m_compiler.setLibraries(_libraryAddresses);
+		m_compiler.setOptimiserSettings(m_optimize, m_optimizeRuns);
+		if (!m_compiler.compile())
 		{
 			for (auto const& error: m_compiler.errors())
 				SourceReferenceFormatter::printExceptionInformation(

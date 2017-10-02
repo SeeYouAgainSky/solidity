@@ -35,6 +35,8 @@ namespace dev
 namespace solidity
 {
 
+class ErrorReporter;
+
 /**
  * Resolves name references, typenames and sets the (explicitly given) types for all variable
  * declarations.
@@ -48,7 +50,7 @@ public:
 	NameAndTypeResolver(
 		std::vector<Declaration const*> const& _globals,
 		std::map<ASTNode const*, std::shared_ptr<DeclarationContainer>>& _scopes,
-		ErrorList& _errors
+		ErrorReporter& _errorReporter
 	);
 	/// Registers all declarations found in the AST node, usually a source unit.
 	/// @returns false in case of error.
@@ -88,6 +90,9 @@ public:
 		std::vector<Declaration const*> const& _declarations
 	);
 
+	/// Generate and store warnings about variables that are named like instructions.
+	void warnVariablesNamedLikeInstructions();
+
 private:
 	/// Internal version of @a resolveNamesAndTypes (called from there) throws exceptions on fatal errors.
 	bool resolveNamesAndTypesInternal(ASTNode& _node, bool _resolveInsideCode = true);
@@ -103,24 +108,6 @@ private:
 	template <class _T>
 	static std::vector<_T const*> cThreeMerge(std::list<std::list<_T const*>>& _toMerge);
 
-	// creates the Declaration error and adds it in the errors list
-	void reportDeclarationError(
-		SourceLocation _sourceLoction,
-		std::string const& _description,
-		SourceLocation _secondarySourceLocation,
-		std::string const& _secondaryDescription
-	);
-	// creates the Declaration error and adds it in the errors list
-	void reportDeclarationError(SourceLocation _sourceLocation, std::string const& _description);
-	// creates the Declaration error and adds it in the errors list and throws FatalError
-	void reportFatalDeclarationError(SourceLocation _sourceLocation, std::string const& _description);
-
-	// creates the Declaration error and adds it in the errors list
-	void reportTypeError(Error const& _e);
-	// creates the Declaration error and adds it in the errors list and throws FatalError
-	void reportFatalTypeError(Error const& _e);
-
-
 	/// Maps nodes declaring a scope to scopes, i.e. ContractDefinition and FunctionDeclaration,
 	/// where nullptr denotes the global scope. Note that structs are not scope since they do
 	/// not contain code.
@@ -128,7 +115,7 @@ private:
 	std::map<ASTNode const*, std::shared_ptr<DeclarationContainer>>& m_scopes;
 
 	DeclarationContainer* m_currentScope = nullptr;
-	ErrorList& m_errors;
+	ErrorReporter& m_errorReporter;
 };
 
 /**
@@ -145,14 +132,23 @@ public:
 	DeclarationRegistrationHelper(
 		std::map<ASTNode const*, std::shared_ptr<DeclarationContainer>>& _scopes,
 		ASTNode& _astRoot,
-		ErrorList& _errors,
+		ErrorReporter& _errorReporter,
 		ASTNode const* _currentScope = nullptr
+	);
+
+	static bool registerDeclaration(
+		DeclarationContainer& _container,
+		Declaration const& _declaration,
+		std::string const* _name,
+		SourceLocation const* _errorLocation,
+		bool _warnOnShadow,
+		ErrorReporter& _errorReporter
 	);
 
 private:
 	bool visit(SourceUnit& _sourceUnit) override;
 	void endVisit(SourceUnit& _sourceUnit) override;
-	bool visit(ImportDirective& _declaration) override;
+	bool visit(ImportDirective& _import) override;
 	bool visit(ContractDefinition& _contract) override;
 	void endVisit(ContractDefinition& _contract) override;
 	bool visit(StructDefinition& _struct) override;
@@ -173,25 +169,15 @@ private:
 	void closeCurrentScope();
 	void registerDeclaration(Declaration& _declaration, bool _opensScope);
 
+	static bool isOverloadedFunction(Declaration const& _declaration1, Declaration const& _declaration2);
+
 	/// @returns the canonical name of the current scope.
 	std::string currentCanonicalName() const;
-	// creates the Declaration error and adds it in the errors list
-	void declarationError(
-		SourceLocation _sourceLocation,
-		std::string const& _description,
-		SourceLocation _secondarySourceLocation,
-		std::string const& _secondaryDescription
-	);
-
-	// creates the Declaration error and adds it in the errors list
-	void declarationError(SourceLocation _sourceLocation, std::string const& _description);
-	// creates the Declaration error and adds it in the errors list and throws FatalError
-	void fatalDeclarationError(SourceLocation _sourceLocation, std::string const& _description);
 
 	std::map<ASTNode const*, std::shared_ptr<DeclarationContainer>>& m_scopes;
 	ASTNode const* m_currentScope = nullptr;
 	VariableScope* m_currentFunction = nullptr;
-	ErrorList& m_errors;
+	ErrorReporter& m_errorReporter;
 };
 
 }

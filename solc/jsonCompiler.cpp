@@ -20,117 +20,26 @@
  * JSON interface for the solidity compiler to be used from Javascript.
  */
 
-#include <string>
-#include <functional>
-#include <iostream>
-#include <json/json.h>
+#include <solc/jsonCompiler.h>
 #include <libdevcore/Common.h>
-#include <libdevcore/CommonData.h>
-#include <libdevcore/CommonIO.h>
 #include <libdevcore/JSON.h>
-#include <libevmasm/Instruction.h>
-#include <libevmasm/GasMeter.h>
-#include <libsolidity/parsing/Scanner.h>
-#include <libsolidity/parsing/Parser.h>
-#include <libsolidity/ast/ASTPrinter.h>
-#include <libsolidity/analysis/NameAndTypeResolver.h>
-#include <libsolidity/interface/Exceptions.h>
-#include <libsolidity/interface/CompilerStack.h>
-#include <libsolidity/interface/SourceReferenceFormatter.h>
-#include <libsolidity/ast/ASTJsonConverter.h>
+#include <libsolidity/interface/StandardCompiler.h>
 #include <libsolidity/interface/Version.h>
+
+#include <string>
+
+#include "license.h"
 
 using namespace std;
 using namespace dev;
 using namespace solidity;
 
-extern "C" {
-/// Callback used to retrieve additional source files. "Returns" two pointers that should be
-/// heap-allocated and are free'd by the caller.
-typedef void (*CStyleReadFileCallback)(char const* _path, char** o_contents, char** o_error);
-}
-
-string formatError(
-	Exception const& _exception,
-	string const& _name,
-	function<Scanner const&(string const&)> const& _scannerFromSourceName
-)
+namespace
 {
-	ostringstream errorOutput;
-	SourceReferenceFormatter::printExceptionInformation(errorOutput, _exception, _name, _scannerFromSourceName);
-	return errorOutput.str();
-}
 
-Json::Value functionHashes(ContractDefinition const& _contract)
+ReadCallback::Callback wrapReadCallback(CStyleReadFileCallback _readCallback = nullptr)
 {
-	Json::Value functionHashes(Json::objectValue);
-	for (auto const& it: _contract.interfaceFunctions())
-		functionHashes[it.second->externalSignature()] = toHex(it.first.ref());
-	return functionHashes;
-}
-
-Json::Value gasToJson(GasEstimator::GasConsumption const& _gas)
-{
-	if (_gas.isInfinite || _gas.value > std::numeric_limits<Json::LargestUInt>::max())
-		return Json::Value(Json::nullValue);
-	else
-		return Json::Value(Json::LargestUInt(_gas.value));
-}
-
-Json::Value estimateGas(CompilerStack const& _compiler, string const& _contract)
-{
-	Json::Value gasEstimates(Json::objectValue);
-	using Gas = GasEstimator::GasConsumption;
-	if (!_compiler.assemblyItems(_contract) && !_compiler.runtimeAssemblyItems(_contract))
-		return gasEstimates;
-	if (eth::AssemblyItems const* items = _compiler.assemblyItems(_contract))
-	{
-		Gas gas = GasEstimator::functionalEstimation(*items);
-		u256 bytecodeSize(_compiler.runtimeObject(_contract).bytecode.size());
-		Json::Value creationGas(Json::arrayValue);
-		creationGas[0] = gasToJson(gas);
-		creationGas[1] = gasToJson(bytecodeSize * eth::GasCosts::createDataGas);
-		gasEstimates["creation"] = creationGas;
-	}
-	if (eth::AssemblyItems const* items = _compiler.runtimeAssemblyItems(_contract))
-	{
-		ContractDefinition const& contract = _compiler.contractDefinition(_contract);
-		Json::Value externalFunctions(Json::objectValue);
-		for (auto it: contract.interfaceFunctions())
-		{
-			string sig = it.second->externalSignature();
-			externalFunctions[sig] = gasToJson(GasEstimator::functionalEstimation(*items, sig));
-		}
-		if (contract.fallbackFunction())
-			externalFunctions[""] = gasToJson(GasEstimator::functionalEstimation(*items, "INVALID"));
-		gasEstimates["external"] = externalFunctions;
-		Json::Value internalFunctions(Json::objectValue);
-		for (auto const& it: contract.definedFunctions())
-		{
-			if (it->isPartOfExternalInterface() || it->isConstructor())
-				continue;
-			size_t entry = _compiler.functionEntryPoint(_contract, *it);
-			GasEstimator::GasConsumption gas = GasEstimator::GasConsumption::infinite();
-			if (entry > 0)
-				gas = GasEstimator::functionalEstimation(*items, entry, *it);
-			FunctionType type(*it);
-			string sig = it->name() + "(";
-			auto paramTypes = type.parameterTypes();
-			for (auto it = paramTypes.begin(); it != paramTypes.end(); ++it)
-				sig += (*it)->toString() + (it + 1 == paramTypes.end() ? "" : ",");
-			sig += ")";
-			internalFunctions[sig] = gasToJson(gas);
-		}
-		gasEstimates["internal"] = internalFunctions;
-	}
-	return gasEstimates;
-}
-
-string compile(StringMap const& _sources, bool _optimize, CStyleReadFileCallback _readCallback)
-{
-	Json::Value output(Json::objectValue);
-	Json::Value errors(Json::arrayValue);
-	CompilerStack::ReadFileCallback readCallback;
+	ReadCallback::Callback readCallback;
 	if (_readCallback)
 	{
 		readCallback = [=](string const& _path)
@@ -138,140 +47,169 @@ string compile(StringMap const& _sources, bool _optimize, CStyleReadFileCallback
 			char* contents_c = nullptr;
 			char* error_c = nullptr;
 			_readCallback(_path.c_str(), &contents_c, &error_c);
-			CompilerStack::ReadFileResult result;
+			ReadCallback::Result result;
 			result.success = true;
 			if (!contents_c && !error_c)
 			{
 				result.success = false;
-				result.contentsOrErrorMesage = "File not found.";
+				result.responseOrErrorMessage = "File not found.";
 			}
 			if (contents_c)
 			{
 				result.success = true;
-				result.contentsOrErrorMesage = string(contents_c);
+				result.responseOrErrorMessage = string(contents_c);
 				free(contents_c);
 			}
 			if (error_c)
 			{
 				result.success = false;
-				result.contentsOrErrorMesage = string(error_c);
+				result.responseOrErrorMessage = string(error_c);
 				free(error_c);
 			}
 			return result;
 		};
 	}
-	CompilerStack compiler(readCallback);
-	auto scannerFromSourceName = [&](string const& _sourceName) -> solidity::Scanner const& { return compiler.scanner(_sourceName); };
-	bool success = false;
-	try
+	return readCallback;
+}
+
+/// Translates a gas value as a string to a JSON number or null
+Json::Value gasToJson(Json::Value const& _value)
+{
+	if (_value.isObject())
 	{
-		compiler.addSources(_sources);
-		bool succ = compiler.compile(_optimize);
-		for (auto const& error: compiler.errors())
+		Json::Value ret = Json::objectValue;
+		for (auto const& sig: _value.getMemberNames())
+			ret[sig] = gasToJson(_value[sig]);
+		return ret;
+	}
+
+	if (_value == "infinite")
+		return Json::Value(Json::nullValue);
+
+	u256 value(_value.asString());
+	if (value > std::numeric_limits<Json::LargestUInt>::max())
+		return Json::Value(Json::nullValue);
+	else
+		return Json::Value(Json::LargestUInt(value));
+}
+
+Json::Value translateGasEstimates(Json::Value const& estimates)
+{
+	Json::Value output(Json::objectValue);
+
+	if (estimates["creation"].isObject())
+	{
+		Json::Value creation(Json::arrayValue);
+		creation[0] = gasToJson(estimates["creation"]["executionCost"]);
+		creation[1] = gasToJson(estimates["creation"]["codeDepositCost"]);
+		output["creation"] = creation;
+	}
+	else
+		output["creation"] = Json::objectValue;
+	output["external"] = gasToJson(estimates.get("external", Json::objectValue));
+	output["internal"] = gasToJson(estimates.get("internal", Json::objectValue));
+
+	return output;
+}
+
+string compile(StringMap const& _sources, bool _optimize, CStyleReadFileCallback _readCallback)
+{
+	/// create new JSON input format
+	Json::Value input = Json::objectValue;
+	input["language"] = "Solidity";
+	input["sources"] = Json::objectValue;
+	for (auto const& source: _sources)
+	{
+		input["sources"][source.first] = Json::objectValue;
+		input["sources"][source.first]["content"] = source.second;
+	}
+	input["settings"] = Json::objectValue;
+	input["settings"]["optimizer"] = Json::objectValue;
+	input["settings"]["optimizer"]["enabled"] = _optimize;
+	input["settings"]["optimizer"]["runs"] = 200;
+
+	StandardCompiler compiler(wrapReadCallback(_readCallback));
+	Json::Value ret = compiler.compile(input);
+
+	/// transform JSON to match the old format
+	// {
+	//   "errors": [ "Error 1", "Error 2" ],
+	//   "sourceList": [ "sourcename1", "sourcename2" ],
+	//   "sources": {
+	//     "sourcename1": {
+	//       "AST": {}
+	//     }
+	//   },
+	//   "contracts": {
+	//     "Contract1": {
+	//       "interface": "[...abi...]",
+	//       "bytecode": "ff0011...",
+	//       "runtimeBytecode": "ff0011",
+	//       "opcodes": "PUSH 1 POP STOP",
+	//       "metadata": "{...metadata...}",
+	//       "functionHashes": {
+	//         "test(uint256)": "11ff2233"
+	//       },
+	//       "gasEstimates": {
+	//         "creation": [ 224, 42000 ],
+	//         "external": {
+	//           "11ff2233": null,
+	//           "3322ff11": 1234
+	//         },
+	//         "internal": {
+	//         }
+	//       },
+	//       "srcmap" = "0:1:2",
+	//       "srcmapRuntime" = "0:1:2",
+	//       "assembly" = {}
+	//     }
+	//   }
+	// }
+	Json::Value output = Json::objectValue;
+
+	if (ret.isMember("errors"))
+	{
+		output["errors"] = Json::arrayValue;
+		for (auto const& error: ret["errors"])
+			output["errors"].append(
+				!error["formattedMessage"].empty() ? error["formattedMessage"] : error["message"]
+			);
+	}
+
+	output["sourceList"] = Json::arrayValue;
+	for (auto const& source: _sources)
+		output["sourceList"].append(source.first);
+
+	if (ret.isMember("sources"))
+	{
+		output["sources"] = Json::objectValue;
+		for (auto const& sourceName: ret["sources"].getMemberNames())
 		{
-			auto err = dynamic_pointer_cast<Error const>(error);
-			errors.append(formatError(
-				*error,
-				(err->type() == Error::Type::Warning) ? "Warning" : "Error",
-				scannerFromSourceName
-			));
+			output["sources"][sourceName] = Json::objectValue;
+			output["sources"][sourceName]["AST"] = ret["sources"][sourceName]["legacyAST"];
 		}
-		success = succ; // keep success false on exception
-	}
-	catch (Error const& error)
-	{
-		errors.append(formatError(error, error.typeName(), scannerFromSourceName));
-	}
-	catch (CompilerError const& exception)
-	{
-		errors.append(formatError(exception, "Compiler error (" + exception.lineInfo() + ")", scannerFromSourceName));
-	}
-	catch (InternalCompilerError const& exception)
-	{
-		errors.append(formatError(exception, "Internal compiler error (" + exception.lineInfo() + ")", scannerFromSourceName));
-	}
-	catch (UnimplementedFeatureError const& exception)
-	{
-		errors.append(formatError(exception, "Unimplemented feature (" + exception.lineInfo() + ")", scannerFromSourceName));
-	}
-	catch (Exception const& exception)
-	{
-		errors.append("Exception during compilation: " + boost::diagnostic_information(exception));
-	}
-	catch (...)
-	{
-		errors.append("Unknown exception during compilation.");
 	}
 
-	if (errors.size() > 0)
-		output["errors"] = errors;
-
-	if (success)
+	if (ret.isMember("contracts"))
 	{
-		try
-		{
-			output["contracts"] = Json::Value(Json::objectValue);
-			for (string const& contractName: compiler.contractNames())
+		output["contracts"] = Json::objectValue;
+		for (auto const& sourceName: ret["contracts"].getMemberNames())
+			for (auto const& contractName: ret["contracts"][sourceName].getMemberNames())
 			{
-				Json::Value contractData(Json::objectValue);
-				contractData["interface"] = dev::jsonCompactPrint(compiler.interface(contractName));
-				contractData["bytecode"] = compiler.object(contractName).toHex();
-				contractData["runtimeBytecode"] = compiler.runtimeObject(contractName).toHex();
-				contractData["opcodes"] = solidity::disassemble(compiler.object(contractName).bytecode);
-				contractData["metadata"] = compiler.onChainMetadata(contractName);
-				contractData["functionHashes"] = functionHashes(compiler.contractDefinition(contractName));
-				contractData["gasEstimates"] = estimateGas(compiler, contractName);
-				auto sourceMap = compiler.sourceMapping(contractName);
-				contractData["srcmap"] = sourceMap ? *sourceMap : "";
-				auto runtimeSourceMap = compiler.runtimeSourceMapping(contractName);
-				contractData["srcmapRuntime"] = runtimeSourceMap ? *runtimeSourceMap : "";
-				ostringstream unused;
-				contractData["assembly"] = compiler.streamAssembly(unused, contractName, _sources, true);
-				output["contracts"][contractName] = contractData;
+				Json::Value contractInput = ret["contracts"][sourceName][contractName];
+				Json::Value contractOutput = Json::objectValue;
+				contractOutput["interface"] = dev::jsonCompactPrint(contractInput["abi"]);
+				contractOutput["metadata"] = contractInput["metadata"];
+				contractOutput["functionHashes"] = contractInput["evm"]["methodIdentifiers"];
+				contractOutput["gasEstimates"] = translateGasEstimates(contractInput["evm"]["gasEstimates"]);
+				contractOutput["assembly"] = contractInput["evm"]["legacyAssembly"];
+				contractOutput["bytecode"] = contractInput["evm"]["bytecode"]["object"];
+				contractOutput["opcodes"] = contractInput["evm"]["bytecode"]["opcodes"];
+				contractOutput["srcmap"] = contractInput["evm"]["bytecode"]["sourceMap"];
+				contractOutput["runtimeBytecode"] = contractInput["evm"]["deployedBytecode"]["object"];
+				contractOutput["srcmapRuntime"] = contractInput["evm"]["deployedBytecode"]["sourceMap"];
+				output["contracts"][sourceName + ":" + contractName] = contractOutput;
 			}
-		}
-		catch (...)
-		{
-			output["errors"].append("Unknown exception while generating contract data output.");
-		}
-
-		try
-		{
-			// Do not taint the internal error list
-			ErrorList formalErrors;
-			if (compiler.prepareFormalAnalysis(&formalErrors))
-				output["formal"]["why3"] = compiler.formalTranslation();
-			if (!formalErrors.empty())
-			{
-				Json::Value errors(Json::arrayValue);
-				for (auto const& error: formalErrors)
-					errors.append(formatError(
-						*error,
-						(error->type() == Error::Type::Warning) ? "Warning" : "Error",
-						scannerFromSourceName
-					));
-				output["formal"]["errors"] = errors;
-			}
-		}
-		catch (...)
-		{
-			output["errors"].append("Unknown exception while generating formal method output.");
-		}
-
-		try
-		{
-			// Indices into this array are used to abbreviate source names in source locations.
-			output["sourceList"] = Json::Value(Json::arrayValue);
-			for (auto const& source: compiler.sourceNames())
-				output["sourceList"].append(source);
-			output["sources"] = Json::Value(Json::objectValue);
-			for (auto const& source: compiler.sourceNames())
-				output["sources"][source]["AST"] = ASTJsonConverter(compiler.ast(source), compiler.sourceIndices()).json();
-		}
-		catch (...)
-		{
-			output["errors"].append("Unknown exception while generating source name output.");
-		}
 	}
 
 	try
@@ -314,10 +252,24 @@ string compileSingle(string const& _input, bool _optimize)
 	return compile(sources, _optimize, nullptr);
 }
 
+
+string compileStandardInternal(string const& _input, CStyleReadFileCallback _readCallback = nullptr)
+{
+	StandardCompiler compiler(wrapReadCallback(_readCallback));
+	return compiler.compile(_input);
+}
+
+}
+
 static string s_outputBuffer;
 
 extern "C"
 {
+extern char const* license()
+{
+	static string fullLicenseText = otherLicenses + licenseText;
+	return fullLicenseText.c_str();
+}
 extern char const* version()
 {
 	return VersionString.c_str();
@@ -335,6 +287,11 @@ extern char const* compileJSONMulti(char const* _input, bool _optimize)
 extern char const* compileJSONCallback(char const* _input, bool _optimize, CStyleReadFileCallback _readCallback)
 {
 	s_outputBuffer = compileMulti(_input, _optimize, _readCallback);
+	return s_outputBuffer.c_str();
+}
+extern char const* compileStandard(char const* _input, CStyleReadFileCallback _readCallback)
+{
+	s_outputBuffer = compileStandardInternal(_input, _readCallback);
 	return s_outputBuffer.c_str();
 }
 }

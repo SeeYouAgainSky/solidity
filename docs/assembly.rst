@@ -9,9 +9,12 @@ This assembly language can also be used as "inline assembly" inside Solidity
 source code. We start with describing how to use inline assembly and how it
 differs from standalone assembly and then specify assembly itself.
 
-TODO: Write about how scoping rules of inline assembly are a bit different
-and the complications that arise when for example using internal functions
-of libraries. Furhermore, write about the symbols defined by the compiler.
+.. note::
+    TODO: Write about how scoping rules of inline assembly are a bit different
+    and the complications that arise when for example using internal functions
+    of libraries. Furthermore, write about the symbols defined by the compiler.
+
+.. _inline-assembly:
 
 Inline Assembly
 ===============
@@ -28,11 +31,8 @@ arising when writing manual assembly by the following features:
 * access to external variables: ``function f(uint x) { assembly { x := sub(x, 1) } }``
 * labels: ``let x := 10  repeat: x := sub(x, 1) jumpi(repeat, eq(x, 0))``
 * loops: ``for { let i := 0 } lt(i, x) { i := add(i, 1) } { y := mul(2, y) }``
-* switch statements: ``switch x case 0: { y := mul(x, 2) } default: { y := 0 }``
-* function calls: ``function f(x) -> (y) { switch x case 0: { y := 1 } default: { y := mul(x, f(sub(x, 1))) }   }``
-
-.. note::
-    Of the above, loops, function calls and switch statements are not yet implemented.
+* switch statements: ``switch x case 0 { y := mul(x, 2) } default { y := 0 }``
+* function calls: ``function f(x) -> y { switch x case 0 { y := 1 } default { y := mul(x, f(sub(x, 1))) }   }``
 
 We now want to describe the inline assembly language in detail.
 
@@ -77,7 +77,7 @@ you really know what you are doing.
 
 .. code::
 
-    pragma solidity ^0.4.0;
+    pragma solidity ^0.4.12;
 
     library VectorSum {
         // This function is less efficient because the optimizer currently fails to
@@ -93,8 +93,33 @@ you really know what you are doing.
         function sumAsm(uint[] _data) returns (uint o_sum) {
             for (uint i = 0; i < _data.length; ++i) {
                 assembly {
-                    o_sum := mload(add(add(_data, 0x20), mul(i, 0x20)))
+                    o_sum := add(o_sum, mload(add(add(_data, 0x20), mul(i, 0x20))))
                 }
+            }
+        }
+
+        // Same as above, but accomplish the entire code within inline assembly.
+        function sumPureAsm(uint[] _data) returns (uint o_sum) {
+            assembly {
+               // Load the length (first 32 bytes)
+               let len := mload(_data)
+
+               // Skip over the length field.
+               //
+               // Keep temporary variable so it can be incremented in place.
+               //
+               // NOTE: incrementing _data would result in an unusable
+               //       _data variable after this assembly block
+               let data := add(_data, 0x20)
+
+               // Iterate until the bound is not met.
+               for
+                   { let end := add(data, len) }
+                   lt(data, end)
+                   { data := add(data, 0x20) }
+               {
+                   o_sum := add(o_sum, mload(data))
+               }
             }
         }
     }
@@ -111,7 +136,7 @@ these curly braces, the following can be used (see the later sections for more d
  - opcodes (in "instruction style"), e.g. ``mload sload dup1 sstore``, for a list see below
  - opcodes in functional style, e.g. ``add(1, mlod(0))``
  - labels, e.g. ``name:``
- - variable declarations, e.g. ``let x := 7`` or ``let x := add(y, 3)``
+ - variable declarations, e.g. ``let x := 7``, ``let x := add(y, 3)`` or ``let x`` (initial value of empty (0) is assigned)
  - identifiers (labels or assembly-local variables and externals if used as inline assembly), e.g. ``jump(name)``, ``3 x add``
  - assignments (in "instruction style"), e.g. ``3 =: x``
  - assignments in functional style, e.g. ``x := add(y, 3)``
@@ -126,7 +151,7 @@ following list can be used as a reference of its opcodes.
 If an opcode takes arguments (always from the top of the stack), they are given in parentheses.
 Note that the order of arguments can be seen to be reversed in non-functional style (explained below).
 Opcodes marked with ``-`` do not push an item onto the stack, those marked with ``*`` are
-special and all others push exactly one item onte the stack.
+special and all others push exactly one item onto the stack.
 
 In the following, ``mem[a...b)`` signifies the bytes of memory starting at position ``a`` up to
 (excluding) position ``b`` and ``storage[p]`` signifies the storage contents at position ``p``.
@@ -182,6 +207,8 @@ In the grammar, opcodes are represented as pre-defined identifiers.
 +-------------------------+------+-----------------------------------------------------------------+
 | signextend(i, x)        |      | sign extend from (i*8+7)th bit counting from least significant  |
 +-------------------------+------+-----------------------------------------------------------------+
+| keccak256(p, n)         |      | keccak(mem[p...(p+n)))                                          |
++-------------------------+------+-----------------------------------------------------------------+
 | sha3(p, n)              |      | keccak(mem[p...(p+n)))                                          |
 +-------------------------+------+-----------------------------------------------------------------+
 | jump(label)             | `-`  | jump to label / code position                                   |
@@ -232,8 +259,16 @@ In the grammar, opcodes are represented as pre-defined identifiers.
 +-------------------------+------+-----------------------------------------------------------------+
 | extcodecopy(a, t, f, s) | `-`  | like codecopy(t, f, s) but take code at address a               |
 +-------------------------+------+-----------------------------------------------------------------+
+| returndatasize          |      | size of the last returndata                                     |
++-------------------------+------+-----------------------------------------------------------------+
+| returndatacopy(t, f, s) | `-`  | copy s bytes from returndata at position f to mem at position t |
++-------------------------+------+-----------------------------------------------------------------+
 | create(v, p, s)         |      | create new contract with code mem[p..(p+s)) and send v wei      |
 |                         |      | and return the new address                                      |
++-------------------------+------+-----------------------------------------------------------------+
+| create2(v, n, p, s)     |      | create new contract with code mem[p..(p+s)) at address          |
+|                         |      | keccak256(<address> . n . keccak256(mem[p..(p+s))) and send v   |
+|                         |      | wei and return the new address                                  |
 +-------------------------+------+-----------------------------------------------------------------+
 | call(g, a, v, in,       |      | call contract at address a with input mem[in..(in+insize))      |
 | insize, out, outsize)   |      | providing g gas and v wei and output area                       |
@@ -245,6 +280,9 @@ In the grammar, opcodes are represented as pre-defined identifiers.
 +-------------------------+------+-----------------------------------------------------------------+
 | delegatecall(g, a, in,  |      | identical to `callcode` but also keep ``caller``                |
 | insize, out, outsize)   |      | and ``callvalue``                                               |
++-------------------------+------+-----------------------------------------------------------------+
+| staticcall(g, a, in,    |      | identical to `call(g, a, 0, in, insize, out, outsize)` but do   |
+| insize, out, outsize)   |      | not allow state modifications                                   |
 +-------------------------+------+-----------------------------------------------------------------+
 | return(p, s)            | `-`  | end execution, return data mem[p..(p+s))                        |
 +-------------------------+------+-----------------------------------------------------------------+
@@ -312,8 +350,10 @@ would be written as follows
 
     mstore(0x80, add(mload(0x80), 3))
 
-Functional style and instructional style can be mixed, but any opcode inside a
-functional style expression has to return exactly one stack slot (most of the opcodes do).
+Functional style expressions cannot use instructional style internally, i.e.
+``1 2 mstore(0x80, add)`` is not valid assembly, it has to be written as
+``mstore(0x80, add(2, 1))``. For opcodes that do not take arguments, the
+parentheses can be omitted.
 
 Note that the order of arguments is reversed in functional-style as opposed to the instruction-style
 way. If you use functional-style, the first argument will end up on the stack top.
@@ -323,9 +363,12 @@ Access to External Variables and Functions
 ------------------------------------------
 
 Solidity variables and other identifiers can be accessed by simply using their name.
-For storage and memory variables, this will push the address and not the value onto the
-stack. Also note that non-struct and non-array storage variable addresses occupy two slots
-on the stack: One for the address and one for the byte offset inside the storage slot.
+For memory variables, this will push the address and not the value onto the
+stack. Storage variables are different: Values in storage might not occupy a
+full storage slot, so their "address" is composed of a slot and a byte-offset
+inside that slot. To retrieve the slot pointed to by the variable ``x``, you
+used ``x_slot`` and to retrieve the byte-offset you used ``x_offset``.
+
 In assignments (see below), we can even use local Solidity variables to assign to.
 
 Functions external to inline assembly can also be accessed: The assembly will
@@ -333,25 +376,20 @@ push their entry label (with virtual function resolution applied). The calling s
 in solidity are:
 
  - the caller pushes return label, arg1, arg2, ..., argn
- - the call returns with ret1, ret2, ..., retn
+ - the call returns with ret1, ret2, ..., retm
 
 This feature is still a bit cumbersome to use, because the stack offset essentially
 changes during the call, and thus references to local variables will be wrong.
-It is planned that the stack height changes can be specified in inline assembly.
 
 .. code::
 
-    pragma solidity ^0.4.0;
+    pragma solidity ^0.4.11;
 
     contract C {
         uint b;
         function f(uint x) returns (uint r) {
             assembly {
-                b pop // remove the offset, we know it is zero
-                sload
-                x
-                mul
-                =: r  // assign to return variable r
+                r := mul(x, sload(b_slot)) // ignore the offset, we know it is zero
             }
         }
     }
@@ -361,7 +399,9 @@ Labels
 
 Another problem in EVM assembly is that ``jump`` and ``jumpi`` use absolute addresses
 which can change easily. Solidity inline assembly provides labels to make the use of
-jumps easier. The following code computes an element in the Fibonacci series.
+jumps easier. Note that labels are a low-level feature and it is possible to write
+efficient assembly without labels, just using assembly functions, loops and switch instructions
+(see below). The following code computes an element in the Fibonacci series.
 
 .. code::
 
@@ -391,12 +431,14 @@ will have a wrong impression about the stack height at label ``two``:
 .. code::
 
     {
+        let x := 8
         jump(two)
         one:
-            // Here the stack height is 1 (because we pushed 7),
-            // but the assembler thinks it is 0 because it reads
+            // Here the stack height is 2 (because we pushed x and 7),
+            // but the assembler thinks it is 1 because it reads
             // from top to bottom.
-            // Accessing stack variables here will lead to errors.
+            // Accessing the stack variable x here will lead to errors.
+            x := 9
             jump(three)
         two:
             7 // push something onto the stack
@@ -404,10 +446,30 @@ will have a wrong impression about the stack height at label ``two``:
         three:
     }
 
-.. note::
+This problem can be fixed by manually adjusting the stack height for the
+assembler - you can provide a stack height delta that is added
+to the stack height just prior to the label.
+Note that you will not have to care about these things if you just use
+loops and assembly-level functions.
 
-    ``invalidJumpLabel`` is a pre-defined label. Jumping to this location will always
-    result in an invalid jump, effectively aborting execution of the code.
+As an example how this can be done in extreme cases, please see the following.
+
+.. code::
+
+    {
+        let x := 8
+        jump(two)
+        0 // This code is unreachable but will adjust the stack height correctly
+        one:
+            x := 9 // Now x can be accessed properly.
+            jump(three)
+            pop // Similar negative correction.
+        two:
+            7 // push something onto the stack
+            jump(one)
+        three:
+        pop // We have to pop the manually pushed value here again.
+    }
 
 Declaring Assembly-Local Variables
 ----------------------------------
@@ -454,7 +516,7 @@ is performed by replacing the variable's value on the stack by the new value.
 
 .. code::
 
-    assembly {
+    {
         let v := 0 // functional-style assignment as part of variable declaration
         let g := add(v, 2)
         sload(10)
@@ -473,13 +535,13 @@ case called ``default``.
 
 .. code::
 
-    assembly {
+    {
         let x := 0
         switch calldataload(4)
-        case 0: {
+        case 0 {
             x := calldataload(0x24)
         }
-        default: {
+        default {
             x := calldataload(0x44)
         }
         sstore(0, div(x, 2))
@@ -494,7 +556,7 @@ Loops
 Assembly supports a simple for-style loop. For-style loops have
 a header containing an initializing part, a condition and a post-iteration
 part. The condition has to be a functional-style expression, while
-the other two can also be blocks. If the initializing part is a block that
+the other two are blocks. If the initializing part
 declares any variables, the scope of these variables is extended into the
 body (including the condition and the post-iteration part).
 
@@ -502,12 +564,26 @@ The following example computes the sum of an area in memory.
 
 .. code::
 
-    assembly {
+    {
         let x := 0
         for { let i := 0 } lt(i, 0x100) { i := add(i, 0x20) } {
             x := add(x, mload(i))
         }
     }
+
+For loops can also be written so that they behave like while loops:
+Simply leave the initialization and post-iteration parts empty.
+
+.. code::
+
+    {
+        let x := 0
+        let i := 0
+        for { } lt(i, 0x100) { } {     // while(i < 0x100)
+            x := add(x, mload(i))
+            i := add(i, 0x20)
+        }
+    } 
 
 Functions
 ---------
@@ -523,21 +599,21 @@ defined outside of that function. There is no explicit ``return``
 statement.
 
 If you call a function that returns multiple values, you have to assign
-them to a tuple using ``(a, b) := f(x)`` or ``let (a, b) := f(x)``.
+them to a tuple using ``a, b := f(x)`` or ``let a, b := f(x)``.
 
 The following example implements the power function by square-and-multiply.
 
 .. code::
 
-    assembly {
-        function power(base, exponent) -> (result) {
+    {
+        function power(base, exponent) -> result {
             switch exponent
-            0: { result := 1 }
-            1: { result := base }
-            default: {
+            case 0 { result := 1 }
+            case 1 { result := base }
+            default {
                 result := power(mul(base, base), div(exponent, 2))
                 switch mod(exponent, 2)
-                    1: { result := mul(base, result) }
+                    case 1 { result := mul(base, result) }
             }
         }
     }
@@ -610,25 +686,19 @@ which follow very simple and regular scoping rules and cleanup of local variable
 Scoping: An identifier that is declared (label, variable, function, assembly)
 is only visible in the block where it was declared (including nested blocks
 inside the current block). It is not legal to access local variables across
-function borders, even if they would be in scope. Shadowing is allowed, but
-two identifiers with the same name cannot be declared in the same block.
+function borders, even if they would be in scope. Shadowing is not allowed.
 Local variables cannot be accessed before they were declared, but labels,
 functions and assemblies can. Assemblies are special blocks that are used
 for e.g. returning runtime code or creating contracts. No identifier from an
 outer assembly is visible in a sub-assembly.
 
 If control flow passes over the end of a block, pop instructions are inserted
-that match the number of local variables declared in that block, unless the
-``}`` is directly preceded by an opcode that does not have a continuing control
-flow path. Whenever a local variable is referenced, the code generator needs
+that match the number of local variables declared in that block.
+Whenever a local variable is referenced, the code generator needs
 to know its current relative position in the stack and thus it needs to
-keep track of the current so-called stack height.
-At the end of a block, this implicit stack height is always reduced by the number
-of local variables whether ther is a continuing control flow or not.
-
-This means that the stack height before and after the block should be the same.
-If this is not the case, a warning is issued,
-unless the last instruction in the block did not have a continuing control flow path.
+keep track of the current so-called stack height. Since all local variables
+are removed at the end of a block, the stack height before and after the block
+should be the same. If this is not the case, a warning is issued.
 
 Why do we use higher-level constructs like ``switch``, ``for`` and functions:
 
@@ -640,15 +710,16 @@ verification and optimization.
 Furthermore, if manual jumps are allowed, computing the stack height is rather complicated.
 The position of all local variables on the stack needs to be known, otherwise
 neither references to local variables nor removing local variables automatically
-from the stack at the end of a block will work properly. Because of that,
-every label that is preceded by an instruction that ends or diverts control flow
-should be annotated with the current stack layout. This annotation is performed
-automatically during the desugaring phase.
+from the stack at the end of a block will work properly. The desugaring
+mechanism correctly inserts operations at unreachable blocks that adjust the
+stack height properly in case of jumps that do not have a continuing control flow.
 
 Example:
 
 We will follow an example compilation from Solidity to desugared assembly.
 We consider the runtime bytecode of the following Solidity program::
+
+    pragma solidity ^0.4.0;
 
     contract C {
       function f(uint x) returns (uint y) {
@@ -664,20 +735,20 @@ The following assembly will be generated::
       mstore(0x40, 0x60) // store the "free memory pointer"
       // function dispatcher
       switch div(calldataload(0), exp(2, 226))
-      case 0xb3de648b: {
+      case 0xb3de648b {
         let (r) = f(calldataload(4))
         let ret := $allocate(0x20)
         mstore(ret, r)
         return(ret, 0x20)
       }
-      default: { jump(invalidJumpLabel) }
+      default { revert(0, 0) }
       // memory allocator
-      function $allocate(size) -> (pos) {
+      function $allocate(size) -> pos {
         pos := mload(0x40)
         mstore(0x40, add(pos, size))
       }
       // the contract function
-      function f(x) -> (y) {
+      function f(x) -> y {
         y := 1
         for { let i := 0 } lt(i, x) { i := add(i, 1) } {
           y := mul(2, y)
@@ -696,41 +767,54 @@ After the desugaring phase it looks as follows::
         $case1:
         {
           // the function call - we put return label and arguments on the stack
-          $ret1 calldataload(4) jump($fun_f)
-          $ret1 [r]: // a label with a [...]-annotation resets the stack height
-                    // to "current block + number of local variables". It also
-                    // introduces a variable, r:
-                    // r is at top of stack, $0 is below (from enclosing block)
-          $ret2 0x20 jump($fun_allocate)
-          $ret2 [ret]: // stack here: $0, r, ret (top)
+          $ret1 calldataload(4) jump(f)
+          // This is unreachable code. Opcodes are added that mirror the
+          // effect of the function on the stack height: Arguments are
+          // removed and return values are introduced.
+          pop pop
+          let r := 0
+          $ret1: // the actual return point
+          $ret2 0x20 jump($allocate)
+          pop pop let ret := 0
+          $ret2:
           mstore(ret, r)
           return(ret, 0x20)
           // although it is useless, the jump is automatically inserted,
-          // since the desugaring process does not analyze control-flow
+          // since the desugaring process is a purely syntactic operation that
+          // does not analyze control-flow
           jump($endswitch)
         }
         $caseDefault:
         {
-          jump(invalidJumpLabel)
+          revert(0, 0)
           jump($endswitch)
         }
         $endswitch:
       }
       jump($afterFunction)
-      $fun_allocate:
+      allocate:
       {
-        $start[$retpos, size]:
-        // output variables live in the same scope as the arguments.
+        // we jump over the unreachable code that introduces the function arguments
+        jump($start)
+        let $retpos := 0 let size := 0
+        $start:
+        // output variables live in the same scope as the arguments and is
+        // actually allocated.
         let pos := 0
         {
           pos := mload(0x40)
           mstore(0x40, add(pos, size))
         }
+        // This code replaces the arguments by the return values and jumps back.
         swap1 pop swap1 jump
+        // Again unreachable code that corrects stack height.
+        0 0
       }
-      $fun_f:
+      f:
       {
-        start [$retpos, x]:
+        jump($start)
+        let $retpos := 0 let x := 0
+        $start:
         let y := 0
         {
           let i := 0
@@ -743,8 +827,9 @@ After the desugaring phase it looks as follows::
           { i := add(i, 1) }
           jump($for_begin)
           $for_end:
-        } // Here, a pop instruction is inserted for i
+        } // Here, a pop instruction will be inserted for i
         swap1 pop swap1 jump
+        0 0
       }
       $afterFunction:
       stop
@@ -805,10 +890,10 @@ Grammar::
     IdentifierOrList = Identifier | '(' IdentifierList ')'
     IdentifierList = Identifier ( ',' Identifier)*
     AssemblyAssignment = '=:' Identifier
-    LabelDefinition = Identifier ( '[' ( IdentifierList | NumberLiteral ) ']' )? ':'
+    LabelDefinition = Identifier ':'
     AssemblySwitch = 'switch' FunctionalAssemblyExpression AssemblyCase*
-        ( 'default' ':' AssemblyBlock )?
-    AssemblyCase = 'case' FunctionalAssemblyExpression ':' AssemblyBlock
+        ( 'default' AssemblyBlock )?
+    AssemblyCase = 'case' FunctionalAssemblyExpression AssemblyBlock
     AssemblyFunctionDefinition = 'function' Identifier '(' IdentifierList? ')'
         ( '->' '(' IdentifierList ')' )? AssemblyBlock
     AssemblyFor = 'for' ( AssemblyBlock | FunctionalAssemblyExpression)
@@ -838,11 +923,14 @@ Pseudocode::
     AssemblyFunctionDefinition('function' name '(' arg1, ..., argn ')' '->' ( '(' ret1, ..., retm ')' body) ->
       <name>:
       {
-        $<name>_start [$retPC, $argn, ..., arg1]:
+        jump($<name>_start)
+        let $retPC := 0 let argn := 0 ... let arg1 := 0
+        $<name>_start:
         let ret1 := 0 ... let retm := 0
         { desugar(body) }
-        swap and pop items so that only ret1, ... retn, $retPC are left on the stack
-        jump 
+        swap and pop items so that only ret1, ... retm, $retPC are left on the stack
+        jump
+        0 (1 + n times) to compensate removal of arg1, ..., argn and $retPC
       }
     AssemblyFor('for' { init } condition post body) ->
       {
@@ -862,6 +950,7 @@ Pseudocode::
         pop all local variables that are defined at the current point
         but not at $forI_end
         jump($forI_end)
+        0 (as many as variables were removed above)
       }
     'continue' ->
       {
@@ -869,6 +958,7 @@ Pseudocode::
         pop all local variables that are defined at the current point
         but not at $forI_continue
         jump($forI_continue)
+        0 (as many as variables were removed above)
       }
     AssemblySwitch(switch condition cases ( default: defaultBlock )? ) ->
       {
@@ -890,10 +980,13 @@ Pseudocode::
           {
             // find I such that $funcallI_* does not exist
             $funcallI_return argn  ... arg2 arg1 jump(<name>)
+            pop (n + 1 times)
             if the current context is `let (id1, ..., idm) := f(...)` ->
-              $funcallI_return [id1, ..., idm]:
+              let id1 := 0 ... let idm := 0
+              $funcallI_return:
             else ->
-              $funcallI_return[m - n - 1]:
+              0 (m times)
+              $funcallI_return:
               turn the functional expression that leads to the function call
               into a statement stream
           }
@@ -906,8 +999,16 @@ Pseudocode::
 Opcode Stream Generation
 ------------------------
 
-During opcode stream generation, we keep track of the current stack height,
-so that accessing stack variables by name is possible.
+During opcode stream generation, we keep track of the current stack height
+in a counter,
+so that accessing stack variables by name is possible. The stack height is modified with every opcode
+that modifies the stack and with every label that is annotated with a stack
+adjustment. Every time a new
+local variable is introduced, it is registered together with the current
+stack height. If a variable is accessed (either for copying its value or for
+assignment), the appropriate ``DUP`` or ``SWAP`` instruction is selected depending
+on the difference between the current stack height and the
+stack height at the point the variable was introduced.
 
 Pseudocode::
 
@@ -945,13 +1046,8 @@ Pseudocode::
       look up id in the syntactic stack of blocks, assert that it is a variable
       SWAPi where i = 1 + stack_height - stack_height_of_identifier(id)
       POP
-    LabelDefinition(name [id1, ..., idn] :) ->
+    LabelDefinition(name:) ->
       JUMPDEST
-      // register new variables id1, ..., idn and set the stack height to
-      // stack_height_at_block_start + number_of_local_variables
-    LabelDefinition(name [number] :) ->
-      JUMPDEST
-      // adjust stack height by +number (can be negative)
     NumberLiteral(num) ->
       PUSH<num interpreted as decimal and right-aligned>
     HexLiteral(lit) ->

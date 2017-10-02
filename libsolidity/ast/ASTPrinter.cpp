@@ -21,8 +21,11 @@
  */
 
 #include <libsolidity/ast/ASTPrinter.h>
-#include <boost/algorithm/string/join.hpp>
 #include <libsolidity/ast/AST.h>
+
+#include <json/json.h>
+
+#include <boost/algorithm/string/join.hpp>
 
 using namespace std;
 
@@ -105,7 +108,7 @@ bool ASTPrinter::visit(FunctionDefinition const& _node)
 {
 	writeLine("FunctionDefinition \"" + _node.name() + "\"" +
 			  (_node.isPublic() ? " - public" : "") +
-			  (_node.isDeclaredConst() ? " - const" : ""));
+			  (_node.stateMutability() == StateMutability::View ? " - const" : ""));
 	printSourcePart(_node);
 	return goDeeper();
 }
@@ -139,13 +142,6 @@ bool ASTPrinter::visit(ModifierInvocation const& _node)
 bool ASTPrinter::visit(EventDefinition const& _node)
 {
 	writeLine("EventDefinition \"" + _node.name() + "\"");
-	printSourcePart(_node);
-	return goDeeper();
-}
-
-bool ASTPrinter::visit(TypeName const& _node)
-{
-	writeLine("TypeName");
 	printSourcePart(_node);
 	return goDeeper();
 }
@@ -434,11 +430,6 @@ void ASTPrinter::endVisit(EventDefinition const&)
 	m_indentation--;
 }
 
-void ASTPrinter::endVisit(TypeName const&)
-{
-	m_indentation--;
-}
-
 void ASTPrinter::endVisit(ElementaryTypeName const&)
 {
 	m_indentation--;
@@ -591,8 +582,11 @@ void ASTPrinter::printSourcePart(ASTNode const& _node)
 	if (!m_source.empty())
 	{
 		SourceLocation const& location(_node.location());
-		*m_ostream << indentation() << "   Source: "
-				   << escaped(m_source.substr(location.start, location.end - location.start), false) << endl;
+		*m_ostream <<
+			indentation() <<
+			"   Source: " <<
+			Json::valueToQuotedString(m_source.substr(location.start, location.end - location.start).c_str()) <<
+			endl;
 	}
 }
 

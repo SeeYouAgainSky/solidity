@@ -14,13 +14,14 @@
 	You should have received a copy of the GNU General Public License
 	along with solidity.  If not, see <http://www.gnu.org/licenses/>.
 */
-/** @file Assembly.cpp
- * @author Gav Wood <i@gavwood.com>
- * @date 2014
- */
 
-#include "AssemblyItem.h"
+#include <libevmasm/AssemblyItem.h>
+
 #include <libevmasm/SemanticInformation.h>
+
+#include <libdevcore/CommonData.h>
+#include <libdevcore/FixedHash.h>
+
 #include <fstream>
 
 using namespace std;
@@ -58,18 +59,18 @@ unsigned AssemblyItem::bytesRequired(unsigned _addressLength) const
 	case Tag: // 1 byte for the JUMPDEST
 		return 1;
 	case PushString:
-		return 33;
+		return 1 + 32;
 	case Push:
 		return 1 + max<unsigned>(1, dev::bytesRequired(data()));
 	case PushSubSize:
 	case PushProgramSize:
-		return 4;		// worst case: a 16MB program
+		return 1 + 4;		// worst case: a 16MB program
 	case PushTag:
 	case PushData:
 	case PushSub:
 		return 1 + _addressLength;
 	case PushLibraryAddress:
-		return 21;
+		return 1 + 20;
 	default:
 		break;
 	}
@@ -159,18 +160,25 @@ string AssemblyItem::toAssemblyText() const
 		text = toHex(toCompactBigEndian(data(), 1), 1, HexPrefix::Add);
 		break;
 	case PushString:
-		assertThrow(false, AssemblyException, "Push string assembly output not implemented.");
+		text = string("data_") + toHex(data());
 		break;
 	case PushTag:
-		assertThrow(data() < 0x10000, AssemblyException, "Sub-assembly tags not yet implemented.");
-		text = string("tag_") + to_string(size_t(data()));
+	{
+		size_t sub{0};
+		size_t tag{0};
+		tie(sub, tag) = splitForeignPushTag();
+		if (sub == size_t(-1))
+			text = string("tag_") + to_string(tag);
+		else
+			text = string("tag_") + to_string(sub) + "_" + to_string(tag);
 		break;
+	}
 	case Tag:
-		assertThrow(data() < 0x10000, AssemblyException, "Sub-assembly tags not yet implemented.");
+		assertThrow(data() < 0x10000, AssemblyException, "Declaration of sub-assembly tag.");
 		text = string("tag_") + to_string(size_t(data())) + ":";
 		break;
 	case PushData:
-		assertThrow(false, AssemblyException, "Push data not implemented.");
+		text = string("data_") + toHex(data());
 		break;
 	case PushSub:
 		text = string("dataOffset(sub_") + to_string(size_t(data())) + ")";
@@ -211,10 +219,10 @@ ostream& dev::eth::operator<<(ostream& _out, AssemblyItem const& _item)
 			_out << "\t" << _item.getJumpTypeAsString();
 		break;
 	case Push:
-		_out << " PUSH " << hex << _item.data();
+		_out << " PUSH " << hex << _item.data() << dec;
 		break;
 	case PushString:
-		_out << " PushString"  << hex << (unsigned)_item.data();
+		_out << " PushString"  << hex << (unsigned)_item.data() << dec;
 		break;
 	case PushTag:
 	{
@@ -229,20 +237,23 @@ ostream& dev::eth::operator<<(ostream& _out, AssemblyItem const& _item)
 		_out << " Tag " << _item.data();
 		break;
 	case PushData:
-		_out << " PushData " << hex << (unsigned)_item.data();
+		_out << " PushData " << hex << (unsigned)_item.data() << dec;
 		break;
 	case PushSub:
-		_out << " PushSub " << hex << size_t(_item.data());
+		_out << " PushSub " << hex << size_t(_item.data()) << dec;
 		break;
 	case PushSubSize:
-		_out << " PushSubSize " << hex << size_t(_item.data());
+		_out << " PushSubSize " << hex << size_t(_item.data()) << dec;
 		break;
 	case PushProgramSize:
 		_out << " PushProgramSize";
 		break;
 	case PushLibraryAddress:
-		_out << " PushLibraryAddress " << hex << h256(_item.data()).abridgedMiddle();
+	{
+		string hash(h256((_item.data())).hex());
+		_out << " PushLibraryAddress " << hash.substr(0, 8) + "..." + hash.substr(hash.length() - 8);
 		break;
+	}
 	case UndefinedItem:
 		_out << " ???";
 		break;

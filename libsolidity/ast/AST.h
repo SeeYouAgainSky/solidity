@@ -23,19 +23,24 @@
 #pragma once
 
 
-#include <string>
-#include <vector>
-#include <memory>
-#include <boost/noncopyable.hpp>
-#include <libevmasm/SourceLocation.h>
-#include <libevmasm/Instruction.h>
-#include <libsolidity/interface/Utils.h>
 #include <libsolidity/ast/ASTForward.h>
 #include <libsolidity/parsing/Token.h>
 #include <libsolidity/ast/Types.h>
 #include <libsolidity/interface/Exceptions.h>
 #include <libsolidity/ast/ASTAnnotations.h>
+#include <libsolidity/ast/ASTEnums.h>
+
+#include <libevmasm/SourceLocation.h>
+#include <libevmasm/Instruction.h>
+
+#include <libdevcore/FixedHash.h>
 #include <json/json.h>
+
+#include <boost/noncopyable.hpp>
+
+#include <string>
+#include <vector>
+#include <memory>
 
 namespace dev
 {
@@ -132,6 +137,9 @@ public:
 
 	std::vector<ASTPointer<ASTNode>> nodes() const { return m_nodes; }
 
+	/// @returns a set of referenced SourceUnits. Recursively if @a _recurse is true.
+	std::set<SourceUnit const*> referencedSourceUnits(bool _recurse = false, std::set<SourceUnit const*> _skipList = std::set<SourceUnit const*>()) const;
+
 private:
 	std::vector<ASTPointer<ASTNode>> m_nodes;
 };
@@ -145,6 +153,24 @@ public:
 	/// Visibility ordered from restricted to unrestricted.
 	enum class Visibility { Default, Private, Internal, Public, External };
 
+	static std::string visibilityToString(Declaration::Visibility _visibility)
+	{
+		switch(_visibility)
+		{
+		case Declaration::Visibility::Public:
+			return "public";
+		case Declaration::Visibility::Internal:
+			return "internal";
+		case Declaration::Visibility::Private:
+			return "private";
+		case Declaration::Visibility::External:
+			return "external";
+		default:
+			solAssert(false, "Invalid visibility specifier.");
+		}
+		return std::string();
+	}
+
 	Declaration(
 		SourceLocation const& _location,
 		ASTPointer<ASTString> const& _name,
@@ -154,6 +180,7 @@ public:
 
 	/// @returns the declared name.
 	ASTString const& name() const { return *m_name; }
+	bool noVisibilitySpecified() const { return m_visibility == Visibility::Default; }
 	Visibility visibility() const { return m_visibility == Visibility::Default ? defaultVisibility() : m_visibility; }
 	bool isPublic() const { return visibility() >= Visibility::Public; }
 	virtual bool isVisibleInContract() const { return visibility() != Visibility::External; }
@@ -163,6 +190,9 @@ public:
 	/// Available only after name and type resolution step.
 	ASTNode const* scope() const { return m_scope; }
 	void setScope(ASTNode const* _scope) { m_scope = _scope; }
+
+	/// @returns the source unit this declaration is present in.
+	SourceUnit const& sourceUnit() const;
 
 	/// @returns the source name this declaration is present in.
 	/// Can be combined with annotation().canonicalName to form a globally unique name.
@@ -316,19 +346,21 @@ protected:
 class ContractDefinition: public Declaration, public Documented
 {
 public:
+	enum class ContractKind { Interface, Contract, Library };
+
 	ContractDefinition(
 		SourceLocation const& _location,
 		ASTPointer<ASTString> const& _name,
 		ASTPointer<ASTString> const& _documentation,
 		std::vector<ASTPointer<InheritanceSpecifier>> const& _baseContracts,
 		std::vector<ASTPointer<ASTNode>> const& _subNodes,
-		bool _isLibrary
+		ContractKind _contractKind = ContractKind::Contract
 	):
 		Declaration(_location, _name),
 		Documented(_documentation),
 		m_baseContracts(_baseContracts),
 		m_subNodes(_subNodes),
-		m_isLibrary(_isLibrary)
+		m_contractKind(_contractKind)
 	{}
 
 	virtual void accept(ASTVisitor& _visitor) override;
@@ -344,7 +376,7 @@ public:
 	std::vector<FunctionDefinition const*> definedFunctions() const { return filteredNodes<FunctionDefinition>(m_subNodes); }
 	std::vector<EventDefinition const*> events() const { return filteredNodes<EventDefinition>(m_subNodes); }
 	std::vector<EventDefinition const*> const& interfaceEvents() const;
-	bool isLibrary() const { return m_isLibrary; }
+	bool isLibrary() const { return m_contractKind == ContractKind::Library; }
 
 	/// @returns a map of canonical function signatures to FunctionDefinitions
 	/// as intended for use by the ABI.
@@ -356,27 +388,21 @@ public:
 
 	/// Returns the constructor or nullptr if no constructor was specified.
 	FunctionDefinition const* constructor() const;
+	/// @returns true iff the constructor of this contract is public (or non-existing).
+	bool constructorIsPublic() const;
 	/// Returns the fallback function or nullptr if no fallback function was specified.
 	FunctionDefinition const* fallbackFunction() const;
-
-	Json::Value const& userDocumentation() const;
-	void setUserDocumentation(Json::Value const& _userDocumentation);
-
-	Json::Value const& devDocumentation() const;
-	void setDevDocumentation(Json::Value const& _devDocumentation);
 
 	virtual TypePointer type() const override;
 
 	virtual ContractDefinitionAnnotation& annotation() const override;
 
+	ContractKind contractKind() const { return m_contractKind; }
+
 private:
 	std::vector<ASTPointer<InheritanceSpecifier>> m_baseContracts;
 	std::vector<ASTPointer<ASTNode>> m_subNodes;
-	bool m_isLibrary;
-
-	// parsed Natspec documentation of the contract.
-	Json::Value m_userDocumentation;
-	Json::Value m_devDocumentation;
+	ContractKind m_contractKind;
 
 	std::vector<ContractDefinition const*> m_linearizedBaseContracts;
 	mutable std::unique_ptr<std::vector<std::pair<FixedHash<4>, FunctionTypePointer>>> m_interfaceFunctionList;
@@ -550,21 +576,19 @@ public:
 		SourceLocation const& _location,
 		ASTPointer<ASTString> const& _name,
 		Declaration::Visibility _visibility,
+		StateMutability _stateMutability,
 		bool _isConstructor,
 		ASTPointer<ASTString> const& _documentation,
 		ASTPointer<ParameterList> const& _parameters,
-		bool _isDeclaredConst,
 		std::vector<ASTPointer<ModifierInvocation>> const& _modifiers,
 		ASTPointer<ParameterList> const& _returnParameters,
-		bool _isPayable,
 		ASTPointer<Block> const& _body
 	):
 		CallableDeclaration(_location, _name, _visibility, _parameters, _returnParameters),
 		Documented(_documentation),
 		ImplementationOptional(_body != nullptr),
+		m_stateMutability(_stateMutability),
 		m_isConstructor(_isConstructor),
-		m_isDeclaredConst(_isDeclaredConst),
-		m_isPayable(_isPayable),
 		m_functionModifiers(_modifiers),
 		m_body(_body)
 	{}
@@ -572,18 +596,19 @@ public:
 	virtual void accept(ASTVisitor& _visitor) override;
 	virtual void accept(ASTConstVisitor& _visitor) const override;
 
+	StateMutability stateMutability() const { return m_stateMutability; }
 	bool isConstructor() const { return m_isConstructor; }
-	bool isDeclaredConst() const { return m_isDeclaredConst; }
-	bool isPayable() const { return m_isPayable; }
+	bool isFallback() const { return name().empty(); }
+	bool isPayable() const { return m_stateMutability == StateMutability::Payable; }
 	std::vector<ASTPointer<ModifierInvocation>> const& modifiers() const { return m_functionModifiers; }
 	std::vector<ASTPointer<VariableDeclaration>> const& returnParameters() const { return m_returnParameters->parameters(); }
-	Block const& body() const { return *m_body; }
-
+	Block const& body() const { solAssert(m_body, ""); return *m_body; }
+	std::string fullyQualifiedName() const;
 	virtual bool isVisibleInContract() const override
 	{
-		return Declaration::isVisibleInContract() && !isConstructor() && !name().empty();
+		return Declaration::isVisibleInContract() && !isConstructor() && !isFallback();
 	}
-	virtual bool isPartOfExternalInterface() const override { return isPublic() && !m_isConstructor && !name().empty(); }
+	virtual bool isPartOfExternalInterface() const override { return isPublic() && !isConstructor() && !isFallback(); }
 
 	/// @returns the external signature of the function
 	/// That consists of the name of the function followed by the types of the
@@ -599,9 +624,8 @@ public:
 	virtual FunctionDefinitionAnnotation& annotation() const override;
 
 private:
+	StateMutability m_stateMutability;
 	bool m_isConstructor;
-	bool m_isDeclaredConst;
-	bool m_isPayable;
 	std::vector<ASTPointer<ModifierInvocation>> m_functionModifiers;
 	ASTPointer<Block> m_body;
 };
@@ -646,6 +670,10 @@ public:
 	bool isLocalVariable() const { return !!dynamic_cast<CallableDeclaration const*>(scope()); }
 	/// @returns true if this variable is a parameter or return parameter of a function.
 	bool isCallableParameter() const;
+	/// @returns true if this variable is a return parameter of a function.
+	bool isReturnParameter() const;
+	/// @returns true if this variable is a local variable or return parameter.
+	bool isLocalOrReturn() const;
 	/// @returns true if this variable is a parameter (not return parameter) of an external function.
 	bool isExternalCallableParameter() const;
 	/// @returns true if the type of the variable does not need to be specified, i.e. it is declared
@@ -691,7 +719,7 @@ public:
 		ASTPointer<ParameterList> const& _parameters,
 		ASTPointer<Block> const& _body
 	):
-		CallableDeclaration(_location, _name, Visibility::Default, _parameters),
+		CallableDeclaration(_location, _name, Visibility::Internal, _parameters),
 		Documented(_documentation),
 		m_body(_body)
 	{
@@ -778,11 +806,11 @@ public:
 		Declaration(SourceLocation(), std::make_shared<ASTString>(_name)), m_type(_type) {}
 	virtual void accept(ASTVisitor&) override
 	{
-		BOOST_THROW_EXCEPTION(InternalCompilerError() << errinfo_comment("MagicVariableDeclaration used inside real AST."));
+		solAssert(false, "MagicVariableDeclaration used inside real AST.");
 	}
 	virtual void accept(ASTConstVisitor&) const override
 	{
-		BOOST_THROW_EXCEPTION(InternalCompilerError() << errinfo_comment("MagicVariableDeclaration used inside real AST."));
+		solAssert(false, "MagicVariableDeclaration used inside real AST.");
 	}
 
 	virtual TypePointer type() const override { return m_type; }
@@ -799,11 +827,10 @@ private:
  */
 class TypeName: public ASTNode
 {
-public:
+protected:
 	explicit TypeName(SourceLocation const& _location): ASTNode(_location) {}
-	virtual void accept(ASTVisitor& _visitor) override;
-	virtual void accept(ASTConstVisitor& _visitor) const override;
 
+public:
 	virtual TypeNameAnnotation& annotation() const override;
 };
 
@@ -857,31 +884,31 @@ public:
 		ASTPointer<ParameterList> const& _parameterTypes,
 		ASTPointer<ParameterList> const& _returnTypes,
 		Declaration::Visibility _visibility,
-		bool _isDeclaredConst,
-		bool _isPayable
+		StateMutability _stateMutability
 	):
 		TypeName(_location), m_parameterTypes(_parameterTypes), m_returnTypes(_returnTypes),
-		m_visibility(_visibility), m_isDeclaredConst(_isDeclaredConst), m_isPayable(_isPayable)
+		m_visibility(_visibility), m_stateMutability(_stateMutability)
 	{}
 	virtual void accept(ASTVisitor& _visitor) override;
 	virtual void accept(ASTConstVisitor& _visitor) const override;
 
 	std::vector<ASTPointer<VariableDeclaration>> const& parameterTypes() const { return m_parameterTypes->parameters(); }
 	std::vector<ASTPointer<VariableDeclaration>> const& returnParameterTypes() const { return m_returnTypes->parameters(); }
+	ASTPointer<ParameterList> const& parameterTypeList() const { return m_parameterTypes; }
+	ASTPointer<ParameterList> const& returnParameterTypeList() const { return m_returnTypes; }
 
 	Declaration::Visibility visibility() const
 	{
 		return m_visibility == Declaration::Visibility::Default ? Declaration::Visibility::Internal : m_visibility;
 	}
-	bool isDeclaredConst() const { return m_isDeclaredConst; }
-	bool isPayable() const { return m_isPayable; }
+	StateMutability stateMutability() const { return m_stateMutability; }
+	bool isPayable() const { return m_stateMutability == StateMutability::Payable; }
 
 private:
 	ASTPointer<ParameterList> m_parameterTypes;
 	ASTPointer<ParameterList> m_returnTypes;
 	Declaration::Visibility m_visibility;
-	bool m_isDeclaredConst;
-	bool m_isPayable;
+	StateMutability m_stateMutability;
 };
 
 /**
@@ -1308,7 +1335,7 @@ private:
 
 /**
  * Tuple, parenthesized expression, or bracketed expression.
- * Examples: (1, 2), (x,), (x), (), [1, 2], 
+ * Examples: (1, 2), (x,), (x), (), [1, 2],
  * Individual components might be empty shared pointers (as in the second example).
  * The respective types in lvalue context are: 2-tuple, 2-tuple (with wildcard), type of x, 0-tuple
  * Not in lvalue context: 2-tuple, _1_-tuple, type of x, 0-tuple.
@@ -1321,8 +1348,8 @@ public:
 		std::vector<ASTPointer<Expression>> const& _components,
 		bool _isArray
 	):
-		Expression(_location), 
-		m_components(_components), 
+		Expression(_location),
+		m_components(_components),
 		m_isArray(_isArray) {}
 	virtual void accept(ASTVisitor& _visitor) override;
 	virtual void accept(ASTConstVisitor& _visitor) const override;
@@ -1583,6 +1610,9 @@ public:
 	ASTString const& value() const { return *m_value; }
 
 	SubDenomination subDenomination() const { return m_subDenomination; }
+
+	/// @returns true if this is a number with a hex prefix.
+	bool isHexNumber() const;
 
 	/// @returns true if this looks like a checksummed address.
 	bool looksLikeAddress() const;

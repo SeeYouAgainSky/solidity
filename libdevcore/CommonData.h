@@ -23,13 +23,13 @@
 
 #pragma once
 
+#include <libdevcore/Common.h>
+
 #include <vector>
-#include <algorithm>
-#include <unordered_set>
 #include <type_traits>
 #include <cstring>
 #include <string>
-#include "Common.h"
+#include <set>
 
 namespace dev
 {
@@ -144,6 +144,24 @@ inline std::string toHex(u256 val, HexPrefix prefix = HexPrefix::DontAdd)
 	return (prefix == HexPrefix::Add) ? "0x" + str : str;
 }
 
+/// Returns decimal representation for small numbers and hex for large numbers.
+inline std::string formatNumber(bigint const& _value)
+{
+	if (_value < 0)
+		return "-" + formatNumber(-_value);
+	if (_value > 0x1000000)
+		return toHex(toCompactBigEndian(_value), 2, HexPrefix::Add);
+	else
+		return _value.str();
+}
+
+inline std::string toCompactHexWithPrefix(u256 val)
+{
+	std::ostringstream ret;
+	ret << std::hex << val;
+	return "0x" + ret.str();
+}
+
 // Algorithms for string and string-like collections.
 
 /// Escapes a string into the C-string representation.
@@ -165,12 +183,19 @@ template <class T, class U> std::vector<T>& operator+=(std::vector<T>& _a, U con
 		_a.push_back(i);
 	return _a;
 }
+/// Concatenate the contents of a container onto a set
+template <class T, class U> std::set<T>& operator+=(std::set<T>& _a, U const& _b)
+{
+	_a.insert(_b.begin(), _b.end());
+	return _a;
+}
 /// Concatenate two vectors of elements.
 template <class T>
 inline std::vector<T> operator+(std::vector<T> const& _a, std::vector<T> const& _b)
 {
 	std::vector<T> ret(_a);
-	return ret += _b;
+	ret += _b;
+	return ret;
 }
 
 template <class T, class V>

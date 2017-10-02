@@ -12,7 +12,7 @@ In particular, we need help in the following areas:
 
 * Improving the documentation
 * Responding to questions from other users on `StackExchange
-  <http://ethereum.stackexchange.com/>`_ and the `Solidity Gitter
+  <https://ethereum.stackexchange.com>`_ and the `Solidity Gitter
   <https://gitter.im/ethereum/solidity>`_
 * Fixing and responding to `Solidity's GitHub issues
   <https://github.com/ethereum/solidity/issues>`_, especially those tagged as
@@ -66,11 +66,35 @@ Running the compiler tests
 Solidity includes different types of tests. They are included in the application
 called ``soltest``. Some of them require the ``cpp-ethereum`` client in testing mode.
 
-To run ``cpp-ethereum`` in testing mode: ``eth --test -d /tmp/testeth``.
+To run a subset of the tests that do not require ``cpp-ethereum``, use ``./build/test/soltest -- --no-ipc``.
 
-To run the tests: ``soltest -- --ipcpath /tmp/testeth/geth.ipc``.
+For all other tests, you need to install `cpp-ethereum <https://github.com/ethereum/cpp-ethereum/releases/download/solidityTester/eth>`_ and run it in testing mode: ``eth --test -d /tmp/testeth``.
+
+Then you run the actual tests: ``./build/test/soltest -- --ipcpath /tmp/testeth/geth.ipc``.
 
 To run a subset of tests, filters can be used:
 ``soltest -t TestSuite/TestName -- --ipcpath /tmp/testeth/geth.ipc``, where ``TestName`` can be a wildcard ``*``.
 
-Alternatively, there is a testing script at ``scripts/test.sh`` which executes all tests.
+Alternatively, there is a testing script at ``scripts/test.sh`` which executes all tests and runs
+``cpp-ethereum`` automatically if it is in the path (but does not download it).
+
+Travis CI even runs some additional tests (including ``solc-js`` and testing third party Solidity frameworks) that require compiling the Emscripten target.
+
+Whiskers
+========
+
+*Whiskers* is a templating system similar to `Mustache <https://mustache.github.io>`_. It is used by the
+compiler in various places to aid readability, and thus maintainability and verifiability, of the code.
+
+The syntax comes with a substantial difference to Mustache: the template markers ``{{`` and ``}}`` are
+replaced by ``<`` and ``>`` in order to aid parsing and avoid conflicts with :ref:`inline-assembly`
+(The symbols ``<`` and ``>`` are invalid in inline assembly, while ``{`` and ``}`` are used to delimit blocks).
+Another limitation is that lists are only resolved one depth and they will not recurse. This may change in the future.
+
+A rough specification is the following:
+
+Any occurrence of ``<name>`` is replaced by the string-value of the supplied variable ``name`` without any
+escaping and without iterated replacements. An area can be delimited by ``<#name>...</name>``. It is replaced
+by as many concatenations of its contents as there were sets of variables supplied to the template system,
+each time replacing any ``<inner>`` items by their respective value. Top-level variables can also be used
+inside such areas.

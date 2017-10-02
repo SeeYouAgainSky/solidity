@@ -54,15 +54,45 @@ Operators:
 * Bit operators: ``&``, ``|``, ``^`` (bitwise exclusive or), ``~`` (bitwise negation)
 * Arithmetic operators: ``+``, ``-``, unary ``-``, unary ``+``, ``*``, ``/``, ``%`` (remainder), ``**`` (exponentiation), ``<<`` (left shift), ``>>`` (right shift)
 
-Division always truncates (it just maps to the DIV opcode of the EVM), but it does not truncate if both
+Division always truncates (it is just compiled to the ``DIV`` opcode of the EVM), but it does not truncate if both
 operators are :ref:`literals<rational_literals>` (or literal expressions).
 
 Division by zero and modulus with zero throws a runtime exception.
 
 The result of a shift operation is the type of the left operand. The
-expression ``x << y`` is equivalent to ``x * 2**y`` and ``x >> y`` is
+expression ``x << y`` is equivalent to ``x * 2**y``, and ``x >> y`` is
 equivalent to ``x / 2**y``. This means that shifting negative numbers
 sign extends. Shifting by a negative amount throws a runtime exception.
+
+.. warning::
+    The results produced by shift right of negative values of signed integer types is different from those produced
+    by other programming languages. In Solidity, shift right maps to division so the shifted negative values
+    are going to be rounded towards zero (truncated). In other programming languages the shift right of negative values
+    works like division with rounding down (towards negative infinity).
+
+.. index:: ! ufixed, ! fixed, ! fixed point number
+
+Fixed Point Numbers
+-------------------
+
+.. warning::
+    Fixed point numbers are not fully supported by Solidity yet. They can be declared, but
+    cannot be assigned to or from.
+
+``fixed`` / ``ufixed``: Signed and unsigned fixed point number of various sizes. Keywords ``ufixedMxN`` and ``fixedMxN``, where ``M`` represent the number of bits taken by 
+the type and ``N`` represent how many decimal points are available. ``M`` must be divisible by 8 and goes from 8 to 256 bits. ``N`` must be between 0 and 80, inclusive.
+``ufixed`` and ``fixed`` are aliases for ``ufixed128x19`` and ``fixed128x19``, respectively.
+
+Operators:
+
+* Comparisons: ``<=``, ``<``, ``==``, ``!=``, ``>=``, ``>`` (evaluate to ``bool``)
+* Arithmetic operators: ``+``, ``-``, unary ``-``, unary ``+``, ``*``, ``/``, ``%`` (remainder)
+
+.. note::
+    The main difference between floating point (``float`` and ``double`` in many languages, more precisely IEEE 754 numbers) and fixed point numbers is
+    that the number of bits used for the integer and the fractional part (the part after the decimal dot) is flexible in the former, while it is strictly
+    defined in the latter. Generally, in floating point almost the entire space is used to represent the number, while only a small number of bits define
+    where the decimal point is.
 
 .. index:: address, balance, send, call, callcode, delegatecall, transfer
 
@@ -71,11 +101,13 @@ sign extends. Shifting by a negative amount throws a runtime exception.
 Address
 -------
 
-``address``: Holds a 20 byte value (size of an Ethereum address). Address types also have members and serve as base for all contracts.
+``address``: Holds a 20 byte value (size of an Ethereum address). Address types also have members and serve as a base for all contracts.
 
 Operators:
 
 * ``<=``, ``<``, ``==``, ``!=``, ``>=`` and ``>``
+
+.. _members-of-addresses:
 
 Members of Addresses
 ^^^^^^^^^^^^^^^^^^^^
@@ -119,13 +151,36 @@ the function ``call`` is provided which takes an arbitrary number of arguments o
 
 ``call`` returns a boolean indicating whether the invoked function terminated (``true``) or caused an EVM exception (``false``). It is not possible to access the actual data returned (for this we would need to know the encoding and size in advance).
 
-In a similar way, the function ``delegatecall`` can be used: The difference is that only the code of the given address is used, all other aspects (storage, balance, ...) are taken from the current contract. The purpose of ``delegatecall`` is to use library code which is stored in another contract. The user has to ensure that the layout of storage in both contracts is suitable for delegatecall to be used. Prior to homestead, only a limited variant called ``callcode`` was available that did not provide access to the original ``msg.sender`` and ``msg.value`` values.
+It is possible to adjust the supplied gas with the ``.gas()`` modifier::
+
+    namReg.call.gas(1000000)("register", "MyName");
+
+Similarly, the supplied Ether value can be controlled too::
+
+    nameReg.call.value(1 ether)("register", "MyName");
+
+Lastly, these modifiers can be combined. Their order does not matter::
+
+    nameReg.call.gas(1000000).value(1 ether)("register", "MyName");
+
+.. note::
+    It is not yet possible to use the gas or value modifiers on overloaded functions.
+
+    A workaround is to introduce a special case for gas and value and just re-check
+    whether they are present at the point of overload resolution.
+
+In a similar way, the function ``delegatecall`` can be used: the difference is that only the code of the given address is used, all other aspects (storage, balance, ...) are taken from the current contract. The purpose of ``delegatecall`` is to use library code which is stored in another contract. The user has to ensure that the layout of storage in both contracts is suitable for delegatecall to be used. Prior to homestead, only a limited variant called ``callcode`` was available that did not provide access to the original ``msg.sender`` and ``msg.value`` values.
 
 All three functions ``call``, ``delegatecall`` and ``callcode`` are very low-level functions and should only be used as a *last resort* as they break the type-safety of Solidity.
+
+The ``.gas()`` option is available on all three methods, while the ``.value()`` option is not supported for ``delegatecall``.
 
 .. note::
     All contracts inherit the members of address, so it is possible to query the balance of the
     current contract using ``this.balance``.
+
+.. note::
+    The use of ``callcode`` is discouraged and will be removed in the future.
 
 .. warning::
     All these functions are low-level functions and should be used with care.
@@ -156,6 +211,10 @@ Members:
 
 * ``.length`` yields the fixed length of the byte array (read-only).
 
+.. note::
+    It is possible to use an array of bytes as ``byte[]``, but it is wasting a lot of space, 31 bytes every element,
+    to be exact, when passing in calls. It is better to use ``bytes``.
+
 Dynamically-sized byte array
 ----------------------------
 
@@ -167,13 +226,6 @@ Dynamically-sized byte array
 As a rule of thumb, use ``bytes`` for arbitrary-length raw byte data and ``string``
 for arbitrary-length string (UTF-8) data. If you can limit the length to a certain
 number of bytes, always use one of ``bytes1`` to ``bytes32`` because they are much cheaper.
-
-.. index:: ! ufixed, ! fixed, ! fixed point number
-
-Fixed Point Numbers
--------------------
-
-**COMING SOON...**
 
 .. index:: address, literal;address
 
@@ -197,11 +249,13 @@ Rational and Integer Literals
 
 Integer literals are formed from a sequence of numbers in the range 0-9.
 They are interpreted as decimals. For example, ``69`` means sixty nine.
-Octal literals do not exist in Solidity and leading zeros are ignored.
-For example, ``0100`` means one hundred.
+Octal literals do not exist in Solidity and leading zeros are invalid.
 
-Decimal literals are formed by a ``.`` with at least one number on
+Decimal fraction literals are formed by a ``.`` with at least one number on
 one side.  Examples include ``1.``, ``.1`` and ``1.3``.
+
+Scientific notation is also supported, where the base can have fractions, while the exponent cannot.
+Examples include ``2e10``, ``-2e10``, ``2e-10``, ``2.5e1``.
 
 Number literal expressions retain arbitrary precision until they are converted to a non-literal type (i.e. by
 using them together with a non-literal expression).
@@ -211,14 +265,6 @@ in number literal expressions.
 For example, ``(2**800 + 1) - 2**800`` results in the constant ``1`` (of type ``uint8``)
 although intermediate results would not even fit the machine word size. Furthermore, ``.5 * 8`` results
 in the integer ``4`` (although non-integers were used in between).
-
-If the result is not an integer,
-an appropriate ``ufixed`` or ``fixed`` type is used whose number of fractional bits is as large as
-required (approximating the rational number in the worst case).
-
-In ``var x = 1/4;``, ``x`` will receive the type ``ufixed0x8`` while in ``var x = 1/3`` it will receive
-the type ``ufixed0x256`` because ``1/3`` is not finitely representable in binary and will thus be
-approximated.
 
 Any operator that can be applied to integers can also be applied to number literal expressions as
 long as the operands are integers. If any of the two is fractional, bit operations are disallowed
@@ -230,14 +276,8 @@ a non-rational number).
     Integer literals and rational number literals belong to number literal types.
     Moreover, all number literal expressions (i.e. the expressions that
     contain only number literals and operators) belong to number literal
-    types.  So the number literal expressions `1 + 2` and `2 + 1` both
+    types.  So the number literal expressions ``1 + 2`` and ``2 + 1`` both
     belong to the same number literal type for the rational number three.
-
-.. note::
-    Most finite decimal fractions like ``5.3743`` are not finitely representable in binary. The correct type
-    for ``5.3743`` is ``ufixed8x248`` because that allows to best approximate the number. If you want to
-    use the number together with types like ``ufixed`` (i.e. ``ufixed128x128``), you have to explicitly
-    specify the desired precision: ``x + ufixed(5.3743)``.
 
 .. warning::
     Division on integer literals used to truncate in earlier versions, but it will now convert into a rational number, i.e. ``5 / 2`` is not equal to ``2``, but to ``2.5``.
@@ -245,8 +285,8 @@ a non-rational number).
 .. note::
     Number literal expressions are converted into a non-literal type as soon as they are used with non-literal
     expressions. Even though we know that the value of the
-    expression assigned to ``b`` in the following example evaluates to an integer, it still
-    uses fixed point types (and not rational number literals) in between and so the code
+    expression assigned to ``b`` in the following example evaluates to
+    an integer, but the partial expression ``2.5 + a`` does not type check so the code
     does not compile
 
 ::
@@ -259,7 +299,7 @@ a non-rational number).
 String Literals
 ---------------
 
-String literals are written with either double or single-quotes (``"foo"`` or ``'bar'``).  They do not imply trailing zeroes as in C; `"foo"`` represents three bytes not four.  As with integer literals, their type can vary, but they are implicitly convertible to ``bytes1``, ..., ``bytes32``, if they fit, to ``bytes`` and to ``string``.
+String literals are written with either double or single-quotes (``"foo"`` or ``'bar'``).  They do not imply trailing zeroes as in C; ``"foo"`` represents three bytes not four.  As with integer literals, their type can vary, but they are implicitly convertible to ``bytes1``, ..., ``bytes32``, if they fit, to ``bytes`` and to ``string``.
 
 String literals support escape characters, such as ``\n``, ``\xNN`` and ``\uNNNN``. ``\xNN`` takes a hex value and inserts the appropriate byte, while ``\uNNNN`` takes a Unicode codepoint and inserts an UTF-8 sequence.
 
@@ -322,7 +362,7 @@ can be assigned from functions and function parameters of function type
 can be used to pass functions to and return functions from function calls.
 Function types come in two flavours - *internal* and *external* functions:
 
-Internal functions can only be used inside the current contract (more specifically,
+Internal functions can only be called inside the current contract (more specifically,
 inside the current code unit, which also includes internal library functions
 and inherited functions) because they cannot be executed outside of the
 context of the current contract. Calling an internal function is realized
@@ -334,14 +374,15 @@ be passed via and returned from external function calls.
 
 Function types are notated as follows::
 
-    function (<parameter types>) {internal|external} [constant] [payable] [returns (<return types>)]
+    function (<parameter types>) {internal|external} [pure|constant|view|payable] [returns (<return types>)]
 
 In contrast to the parameter types, the return types cannot be empty - if the
 function type should not return anything, the whole ``returns (<return types>)``
 part has to be omitted.
 
 By default, function types are internal, so the ``internal`` keyword can be
-omitted.
+omitted. In contrast, contract functions themselves are public by default,
+only when used as the name of a type, the default is internal.
 
 There are two ways to access a function in the current contract: Either directly
 by its name, ``f``, or using ``this.f``. The former will result in an internal
@@ -358,6 +399,17 @@ followed by the function identifier together in a single ``bytes24`` type.
 Note that public functions of the current contract can be used both as an
 internal and as an external function. To use ``f`` as an internal function,
 just use ``f``, if you want to use its external form, use ``this.f``.
+
+Additionally, public (or external) functions also have a special member called ``selector``,
+which returns the :ref:`ABI function selector <abi_function_selector>`::
+
+    pragma solidity ^0.4.0;
+
+    contract Selector {
+      function f() returns (bytes4) {
+        return this.f.selector;
+      }
+    }
 
 Example that shows how to use internal function types::
 
@@ -377,7 +429,7 @@ Example that shows how to use internal function types::
       }
       function reduce(
         uint[] memory self,
-        function (uint x, uint y) returns (uint) f
+        function (uint, uint) returns (uint) f
       )
         internal
         returns (uint r)
@@ -410,7 +462,7 @@ Example that shows how to use internal function types::
 
 Another example that uses external function types::
 
-    pragma solidity ^0.4.5;
+    pragma solidity ^0.4.11;
 
     contract Oracle {
       struct Request {
@@ -435,12 +487,13 @@ Another example that uses external function types::
         oracle.query("USD", this.oracleResponse);
       }
       function oracleResponse(bytes response) {
-        if (msg.sender != address(oracle)) throw;
+        require(msg.sender == address(oracle));
         // Use the data
       }
     }
 
-Note that lambda or inline functions are planned but not yet supported.
+.. note::
+    Lambda or inline functions are planned but not yet supported.
 
 .. index:: ! type;reference, ! reference type, storage, memory, location, array, struct
 
@@ -462,19 +515,19 @@ context, there is always a default, but it can be overridden by appending
 either ``storage`` or ``memory`` to the type. The default for function parameters (including return parameters) is ``memory``, the default for local variables is ``storage`` and the location is forced
 to ``storage`` for state variables (obviously).
 
-There is also a third data location, "calldata", which is a non-modifyable
+There is also a third data location, ``calldata``, which is a non-modifiable,
 non-persistent area where function arguments are stored. Function parameters
-(not return parameters) of external functions are forced to "calldata" and
-it behaves mostly like memory.
+(not return parameters) of external functions are forced to ``calldata`` and
+behave mostly like ``memory``.
 
 Data locations are important because they change how assignments behave:
-Assignments between storage and memory and also to a state variable (even from other state variables)
+assignments between storage and memory and also to a state variable (even from other state variables)
 always create an independent copy.
 Assignments to local storage variables only assign a reference though, and
 this reference always points to the state variable even if the latter is changed
 in the meantime.
 On the other hand, assignments from a memory stored reference type to another
-memory-stored reference type does not create a copy.
+memory-stored reference type do not create a copy.
 
 ::
 
@@ -547,7 +600,7 @@ So ``bytes`` should always be preferred over ``byte[]`` because it is cheaper.
     that you are accessing the low-level bytes of the UTF-8 representation,
     and not the individual characters!
 
-It is possible to mark arrays ``public`` and have Solidity create a getter.
+It is possible to mark arrays ``public`` and have Solidity create a :ref:`getter <visibility-and-getters>`.
 The numeric index will become a required parameter for the getter.
 
 .. index:: ! array;allocating, new
@@ -603,6 +656,8 @@ possible:
 
 ::
 
+    // This will not compile.
+
     pragma solidity ^0.4.0;
 
     contract C {
@@ -610,6 +665,7 @@ possible:
             // The next line creates a type error because uint[3] memory
             // cannot be converted to uint[] memory.
             uint[] x = [uint(1), 3, 4];
+        }
     }
 
 It is planned to remove this restriction in the future but currently creates
@@ -645,7 +701,8 @@ Members
 
     contract ArrayContract {
         uint[2**20] m_aLotOfIntegers;
-        // Note that the following is not a pair of arrays but an array of pairs.
+        // Note that the following is not a pair of dynamic arrays but a
+        // dynamic array of pairs (i.e. of fixed size arrays of length two).
         bool[2][] m_pairsOfFlags;
         // newPairs is stored in memory - the default for function arguments
 
@@ -712,7 +769,7 @@ shown in the following example:
 
 ::
 
-    pragma solidity ^0.4.0;
+    pragma solidity ^0.4.11;
 
     contract CrowdFunding {
         // Defines a new type with two fields.
@@ -739,7 +796,7 @@ shown in the following example:
         }
 
         function contribute(uint campaignID) payable {
-            Campaign c = campaigns[campaignID];
+            Campaign storage c = campaigns[campaignID];
             // Creates a new temporary memory struct, initialised with the given values
             // and copies it over to storage.
             // Note that you can also use Funder(msg.sender, msg.value) to initialise.
@@ -748,13 +805,12 @@ shown in the following example:
         }
 
         function checkGoalReached(uint campaignID) returns (bool reached) {
-            Campaign c = campaigns[campaignID];
+            Campaign storage c = campaigns[campaignID];
             if (c.amount < c.fundingGoal)
                 return false;
             uint amount = c.amount;
             c.amount = 0;
-            if (!c.beneficiary.send(amount))
-                throw;
+            c.beneficiary.transfer(amount);
             return true;
         }
     }
@@ -786,7 +842,7 @@ Mapping types are declared as ``mapping(_KeyType => _ValueType)``.
 Here ``_KeyType`` can be almost any type except for a mapping, a dynamically sized array, a contract, an enum and a struct.
 ``_ValueType`` can actually be any type, including mappings.
 
-Mappings can be seen as hashtables which are virtually initialized such that
+Mappings can be seen as `hash tables <https://en.wikipedia.org/wiki/Hash_table>`_ which are virtually initialized such that
 every possible key exists and is mapped to a value whose byte-representation is
 all zeros: a type's :ref:`default value <default-value>`. The similarity ends here, though: The key data is not actually stored
 in a mapping, only its ``keccak256`` hash used to look up the value.
@@ -796,7 +852,7 @@ Because of this, mappings do not have a length or a concept of a key or value be
 Mappings are only allowed for state variables (or as storage reference types
 in internal functions).
 
-It is possible to mark mappings ``public`` and have Solidity create a getter.
+It is possible to mark mappings ``public`` and have Solidity create a :ref:`getter <visibility-and-getters>`.
 The ``_KeyType`` will become a required parameter for the getter and it will
 return ``_ValueType``.
 
@@ -817,7 +873,9 @@ for each ``_KeyType``, recursively.
 
     contract MappingUser {
         function f() returns (uint) {
-            return MappingExample(<address>).balances(this);
+            MappingExample m = new MappingExample();
+            m.update(100);
+            return m.balances(this);
         }
     }
 

@@ -24,7 +24,9 @@
 
 #include <libsolidity/ast/AST.h>
 #include <libsolidity/analysis/TypeChecker.h>
-#include <libsolidity/interface/Exceptions.h>
+#include <libsolidity/interface/ErrorReporter.h>
+
+#include <boost/algorithm/string.hpp>
 
 using namespace std;
 
@@ -36,10 +38,10 @@ namespace solidity
 NameAndTypeResolver::NameAndTypeResolver(
 	vector<Declaration const*> const& _globals,
 	map<ASTNode const*, shared_ptr<DeclarationContainer>>& _scopes,
-	ErrorList& _errors
+	ErrorReporter& _errorReporter
 ) :
 	m_scopes(_scopes),
-	m_errors(_errors)
+	m_errorReporter(_errorReporter)
 {
 	if (!m_scopes[nullptr])
 		m_scopes[nullptr].reset(new DeclarationContainer());
@@ -52,11 +54,11 @@ bool NameAndTypeResolver::registerDeclarations(ASTNode& _sourceUnit, ASTNode con
 	// The helper registers all declarations in m_scopes as a side-effect of its construction.
 	try
 	{
-		DeclarationRegistrationHelper registrar(m_scopes, _sourceUnit, m_errors, _currentScope);
+		DeclarationRegistrationHelper registrar(m_scopes, _sourceUnit, m_errorReporter, _currentScope);
 	}
 	catch (FatalError const&)
 	{
-		if (m_errors.empty())
+		if (m_errorReporter.errors().empty())
 			throw; // Something is weird here, rather throw again.
 		return false;
 	}
@@ -73,7 +75,7 @@ bool NameAndTypeResolver::performImports(SourceUnit& _sourceUnit, map<string, So
 			string const& path = imp->annotation().absolutePath;
 			if (!_sourceUnits.count(path))
 			{
-				reportDeclarationError(
+				m_errorReporter.declarationError(
 					imp->location(),
 					"Import \"" + path + "\" (referenced as \"" + imp->path() + "\") not found."
 				);
@@ -88,7 +90,7 @@ bool NameAndTypeResolver::performImports(SourceUnit& _sourceUnit, map<string, So
 					auto declarations = scope->second->resolveName(alias.first->name(), false);
 					if (declarations.empty())
 					{
-						reportDeclarationError(
+						m_errorReporter.declarationError(
 							imp->location(),
 							"Declaration \"" +
 							alias.first->name() +
@@ -102,29 +104,18 @@ bool NameAndTypeResolver::performImports(SourceUnit& _sourceUnit, map<string, So
 					}
 					else
 						for (Declaration const* declaration: declarations)
-						{
-							ASTString const* name = alias.second ? alias.second.get() : &declaration->name();
-							if (!target.registerDeclaration(*declaration, name))
-							{
-								reportDeclarationError(
-									imp->location(),
-									"Identifier \"" + *name + "\" already declared."
-								);
+							if (!DeclarationRegistrationHelper::registerDeclaration(
+								target, *declaration, alias.second.get(), &imp->location(), true, m_errorReporter
+							))
 								error = true;
-							}
-						}
 				}
 			else if (imp->name().empty())
 				for (auto const& nameAndDeclaration: scope->second->declarations())
 					for (auto const& declaration: nameAndDeclaration.second)
-						if (!target.registerDeclaration(*declaration, &nameAndDeclaration.first))
-						{
-							reportDeclarationError(
-								imp->location(),
-								"Identifier \"" + nameAndDeclaration.first + "\" already declared."
-							);
-							error = true;
-						}
+						if (!DeclarationRegistrationHelper::registerDeclaration(
+							target, *declaration, &nameAndDeclaration.first, &imp->location(), true, m_errorReporter
+						))
+							error =  true;
 		}
 	return !error;
 }
@@ -137,7 +128,7 @@ bool NameAndTypeResolver::resolveNamesAndTypes(ASTNode& _node, bool _resolveInsi
 	}
 	catch (FatalError const&)
 	{
-		if (m_errors.empty())
+		if (m_errorReporter.errors().empty())
 			throw; // Something is weird here, rather throw again.
 		return false;
 	}
@@ -152,7 +143,7 @@ bool NameAndTypeResolver::updateDeclaration(Declaration const& _declaration)
 	}
 	catch (FatalError const&)
 	{
-		if (m_errors.empty())
+		if (m_errorReporter.errors().empty())
 			throw; // Something is weird here, rather throw again.
 		return false;
 	}
@@ -214,7 +205,7 @@ vector<Declaration const*> NameAndTypeResolver::cleanedDeclarations(
 
 		for (auto parameter: functionType->parameterTypes() + functionType->returnParameterTypes())
 			if (!parameter)
-				reportFatalDeclarationError(_identifier.location(), "Function type can not be used in this context.");
+				m_errorReporter.fatalDeclarationError(_identifier.location(), "Function type can not be used in this context.");
 
 		if (uniqueFunctions.end() == find_if(
 			uniqueFunctions.begin(),
@@ -230,6 +221,26 @@ vector<Declaration const*> NameAndTypeResolver::cleanedDeclarations(
 			uniqueFunctions.push_back(declaration);
 	}
 	return uniqueFunctions;
+}
+
+void NameAndTypeResolver::warnVariablesNamedLikeInstructions()
+{
+	for (auto const& instruction: c_instructions)
+	{
+		string const instructionName{boost::algorithm::to_lower_copy(instruction.first)};
+		auto declarations = nameFromCurrentScope(instructionName);
+		for (Declaration const* const declaration: declarations)
+		{
+			solAssert(!!declaration, "");
+			if (dynamic_cast<MagicVariableDeclaration const* const>(declaration))
+				// Don't warn the user for what the user did not.
+				continue;
+			m_errorReporter.warning(
+				declaration->location(),
+				"Variable is shadowed in inline assembly by an instruction of the same name"
+			);
+		}
+	}
 }
 
 bool NameAndTypeResolver::resolveNamesAndTypesInternal(ASTNode& _node, bool _resolveInsideCode)
@@ -290,7 +301,7 @@ bool NameAndTypeResolver::resolveNamesAndTypesInternal(ASTNode& _node, bool _res
 	{
 		if (m_scopes.count(&_node))
 			m_currentScope = m_scopes[&_node].get();
-		return ReferencesResolver(m_errors, *this, _resolveInsideCode).resolve(_node);
+		return ReferencesResolver(m_errorReporter, *this, _resolveInsideCode).resolve(_node);
 	}
 }
 
@@ -328,11 +339,10 @@ void NameAndTypeResolver::importInheritedScope(ContractDefinition const& _base)
 						secondDeclarationLocation = declaration->location();
 					}
 
-					reportDeclarationError(
+					m_errorReporter.declarationError(
 						secondDeclarationLocation,
-						"Identifier already declared.",
-						firstDeclarationLocation,
-						"The previous declaration is here:"
+						SecondarySourceLocation().append("The previous declaration is here:", firstDeclarationLocation),
+						"Identifier already declared."
 					);
 				}
 }
@@ -347,19 +357,19 @@ void NameAndTypeResolver::linearizeBaseContracts(ContractDefinition& _contract)
 		UserDefinedTypeName const& baseName = baseSpecifier->name();
 		auto base = dynamic_cast<ContractDefinition const*>(baseName.annotation().referencedDeclaration);
 		if (!base)
-			reportFatalTypeError(baseName.createTypeError("Contract expected."));
+			m_errorReporter.fatalTypeError(baseName.location(), "Contract expected.");
 		// "push_front" has the effect that bases mentioned later can overwrite members of bases
 		// mentioned earlier
 		input.back().push_front(base);
 		vector<ContractDefinition const*> const& basesBases = base->annotation().linearizedBaseContracts;
 		if (basesBases.empty())
-			reportFatalTypeError(baseName.createTypeError("Definition of base has to precede definition of derived contract"));
+			m_errorReporter.fatalTypeError(baseName.location(), "Definition of base has to precede definition of derived contract");
 		input.push_front(list<ContractDefinition const*>(basesBases.begin(), basesBases.end()));
 	}
 	input.back().push_front(&_contract);
 	vector<ContractDefinition const*> result = cThreeMerge(input);
 	if (result.empty())
-		reportFatalTypeError(_contract.createTypeError("Linearization of inheritance graph impossible"));
+		m_errorReporter.fatalTypeError(_contract.location(), "Linearization of inheritance graph impossible");
 	_contract.annotation().linearizedBaseContracts = result;
 	_contract.annotation().contractDependencies.insert(result.begin() + 1, result.end());
 }
@@ -415,64 +425,83 @@ vector<_T const*> NameAndTypeResolver::cThreeMerge(list<list<_T const*>>& _toMer
 	return result;
 }
 
-void NameAndTypeResolver::reportDeclarationError(
-	SourceLocation _sourceLoction,
-	string const& _description,
-	SourceLocation _secondarySourceLocation,
-	string const& _secondaryDescription
-)
-{
-	auto err = make_shared<Error>(Error::Type::DeclarationError); // todo remove Error?
-	*err <<
-		errinfo_sourceLocation(_sourceLoction) <<
-		errinfo_comment(_description) <<
-		errinfo_secondarySourceLocation(
-			SecondarySourceLocation().append(_secondaryDescription, _secondarySourceLocation)
-		);
-
-	m_errors.push_back(err);
-}
-
-void NameAndTypeResolver::reportDeclarationError(SourceLocation _sourceLocation, string const& _description)
-{
-	auto err = make_shared<Error>(Error::Type::DeclarationError); // todo remove Error?
-	*err <<	errinfo_sourceLocation(_sourceLocation) << errinfo_comment(_description);
-
-	m_errors.push_back(err);
-}
-
-void NameAndTypeResolver::reportFatalDeclarationError(
-	SourceLocation _sourceLocation,
-	string const& _description
-)
-{
-	reportDeclarationError(_sourceLocation, _description);
-	BOOST_THROW_EXCEPTION(FatalError());
-}
-
-void NameAndTypeResolver::reportTypeError(Error const& _e)
-{
-	m_errors.push_back(make_shared<Error>(_e));
-}
-
-void NameAndTypeResolver::reportFatalTypeError(Error const& _e)
-{
-	reportTypeError(_e);
-	BOOST_THROW_EXCEPTION(FatalError());
-}
-
 DeclarationRegistrationHelper::DeclarationRegistrationHelper(
 	map<ASTNode const*, shared_ptr<DeclarationContainer>>& _scopes,
 	ASTNode& _astRoot,
-	ErrorList& _errors,
+	ErrorReporter& _errorReporter,
 	ASTNode const* _currentScope
 ):
 	m_scopes(_scopes),
 	m_currentScope(_currentScope),
-	m_errors(_errors)
+	m_errorReporter(_errorReporter)
 {
 	_astRoot.accept(*this);
 	solAssert(m_currentScope == _currentScope, "Scopes not correctly closed.");
+}
+
+bool DeclarationRegistrationHelper::registerDeclaration(
+	DeclarationContainer& _container,
+	Declaration const& _declaration,
+	string const* _name,
+	SourceLocation const* _errorLocation,
+	bool _warnOnShadow,
+	ErrorReporter& _errorReporter
+)
+{
+	if (!_errorLocation)
+		_errorLocation = &_declaration.location();
+
+	Declaration const* shadowedDeclaration = nullptr;
+	if (_warnOnShadow && !_declaration.name().empty() && _container.enclosingContainer())
+		for (auto const* decl: _container.enclosingContainer()->resolveName(_declaration.name(), true))
+			shadowedDeclaration = decl;
+
+	if (!_container.registerDeclaration(_declaration, _name, !_declaration.isVisibleInContract()))
+	{
+		SourceLocation firstDeclarationLocation;
+		SourceLocation secondDeclarationLocation;
+		Declaration const* conflictingDeclaration = _container.conflictingDeclaration(_declaration, _name);
+		solAssert(conflictingDeclaration, "");
+		bool const comparable =
+			_errorLocation->sourceName &&
+			conflictingDeclaration->location().sourceName &&
+			*_errorLocation->sourceName == *conflictingDeclaration->location().sourceName;
+		if (comparable && _errorLocation->start < conflictingDeclaration->location().start)
+		{
+			firstDeclarationLocation = *_errorLocation;
+			secondDeclarationLocation = conflictingDeclaration->location();
+		}
+		else
+		{
+			firstDeclarationLocation = conflictingDeclaration->location();
+			secondDeclarationLocation = *_errorLocation;
+		}
+
+		_errorReporter.declarationError(
+			secondDeclarationLocation,
+			SecondarySourceLocation().append("The previous declaration is here:", firstDeclarationLocation),
+			"Identifier already declared."
+		);
+		return false;
+	}
+	else if (shadowedDeclaration)
+	{
+		if (dynamic_cast<MagicVariableDeclaration const*>(shadowedDeclaration))
+			_errorReporter.warning(
+				_declaration.location(),
+				"This declaration shadows a builtin symbol."
+			);
+		else
+		{
+			auto shadowedLocation = shadowedDeclaration->location();
+			_errorReporter.warning(
+				_declaration.location(),
+				"This declaration shadows an existing declaration.",
+				SecondarySourceLocation().append("The shadowed declaration is here:", shadowedLocation)
+			);
+		}
+	}
+	return true;
 }
 
 bool DeclarationRegistrationHelper::visit(SourceUnit& _sourceUnit)
@@ -615,31 +644,21 @@ void DeclarationRegistrationHelper::closeCurrentScope()
 void DeclarationRegistrationHelper::registerDeclaration(Declaration& _declaration, bool _opensScope)
 {
 	solAssert(m_currentScope && m_scopes.count(m_currentScope), "No current scope.");
-	if (!m_scopes[m_currentScope]->registerDeclaration(_declaration, nullptr, !_declaration.isVisibleInContract()))
-	{
-		SourceLocation firstDeclarationLocation;
-		SourceLocation secondDeclarationLocation;
-		Declaration const* conflictingDeclaration = m_scopes[m_currentScope]->conflictingDeclaration(_declaration);
-		solAssert(conflictingDeclaration, "");
 
-		if (_declaration.location().start < conflictingDeclaration->location().start)
-		{
-			firstDeclarationLocation = _declaration.location();
-			secondDeclarationLocation = conflictingDeclaration->location();
-		}
-		else
-		{
-			firstDeclarationLocation = conflictingDeclaration->location();
-			secondDeclarationLocation = _declaration.location();
-		}
+	bool warnAboutShadowing = true;
+	// Do not warn about shadowing for structs and enums because their members are
+	// not accessible without prefixes.
+	if (
+		dynamic_cast<StructDefinition const*>(m_currentScope) ||
+		dynamic_cast<EnumDefinition const*>(m_currentScope)
+	)
+		warnAboutShadowing = false;
+	// Do not warn about the constructor shadowing the contract.
+	if (auto fun = dynamic_cast<FunctionDefinition const*>(&_declaration))
+		if (fun->isConstructor())
+			warnAboutShadowing = false;
 
-		declarationError(
-			secondDeclarationLocation,
-			"Identifier already declared.",
-			firstDeclarationLocation,
-			"The previous declaration is here:"
-		);
-	}
+	registerDeclaration(*m_scopes[m_currentScope], _declaration, nullptr, nullptr, warnAboutShadowing, m_errorReporter);
 
 	_declaration.setScope(m_currentScope);
 	if (_opensScope)
@@ -663,41 +682,6 @@ string DeclarationRegistrationHelper::currentCanonicalName() const
 		}
 	}
 	return ret;
-}
-
-void DeclarationRegistrationHelper::declarationError(
-	SourceLocation _sourceLocation,
-	string const& _description,
-	SourceLocation _secondarySourceLocation,
-	string const& _secondaryDescription
-)
-{
-	auto err = make_shared<Error>(Error::Type::DeclarationError);
-	*err <<
-		errinfo_sourceLocation(_sourceLocation) <<
-		errinfo_comment(_description) <<
-		errinfo_secondarySourceLocation(
-			SecondarySourceLocation().append(_secondaryDescription, _secondarySourceLocation)
-		);
-
-	m_errors.push_back(err);
-}
-
-void DeclarationRegistrationHelper::declarationError(SourceLocation _sourceLocation, string const& _description)
-{
-	auto err = make_shared<Error>(Error::Type::DeclarationError);
-	*err <<	errinfo_sourceLocation(_sourceLocation) << errinfo_comment(_description);
-
-	m_errors.push_back(err);
-}
-
-void DeclarationRegistrationHelper::fatalDeclarationError(
-	SourceLocation _sourceLocation,
-	string const& _description
-)
-{
-	declarationError(_sourceLocation, _description);
-	BOOST_THROW_EXCEPTION(FatalError());
 }
 
 }

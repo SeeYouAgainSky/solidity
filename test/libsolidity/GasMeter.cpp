@@ -47,8 +47,10 @@ public:
 	GasMeterTestFramework() { }
 	void compile(string const& _sourceCode)
 	{
-		m_compiler.setSource("pragma solidity >= 0.0;" + _sourceCode);
-		ETH_TEST_REQUIRE_NO_THROW(m_compiler.compile(), "Compiling contract failed");
+		m_compiler.reset(false);
+		m_compiler.addSource("", "pragma solidity >=0.0;\n" + _sourceCode);
+		m_compiler.setOptimiserSettings(dev::test::Options::get().optimize);
+		BOOST_REQUIRE_MESSAGE(m_compiler.compile(), "Compiling contract failed");
 
 		AssemblyItems const* items = m_compiler.runtimeAssemblyItems("");
 		ASTNode const& sourceUnit = m_compiler.ast();
@@ -151,20 +153,20 @@ BOOST_AUTO_TEST_CASE(simple_contract)
 		contract test {
 			bytes32 public shaValue;
 			function f(uint a) {
-				shaValue = sha3(a);
+				shaValue = keccak256(a);
 			}
 		}
 	)";
 	testCreationTimeGas(sourceCode);
 }
 
-BOOST_AUTO_TEST_CASE(store_sha3)
+BOOST_AUTO_TEST_CASE(store_keccak256)
 {
 	char const* sourceCode = R"(
 		contract test {
 			bytes32 public shaValue;
 			function test(uint a) {
-				shaValue = sha3(a);
+				shaValue = keccak256(a);
 			}
 		}
 	)";
@@ -246,6 +248,51 @@ BOOST_AUTO_TEST_CASE(multiple_external_functions)
 	testCreationTimeGas(sourceCode);
 	testRunTimeGas("f(uint256)", vector<bytes>{encodeArgs(2), encodeArgs(8)});
 	testRunTimeGas("g(uint256)", vector<bytes>{encodeArgs(2)});
+}
+
+BOOST_AUTO_TEST_CASE(exponent_size)
+{
+	char const* sourceCode = R"(
+		contract A {
+			function g(uint x) returns (uint) {
+				return x ** 0x100;
+			}
+			function h(uint x) returns (uint) {
+				return x ** 0x10000;
+			}
+		}
+	)";
+	testCreationTimeGas(sourceCode);
+	testRunTimeGas("g(uint256)", vector<bytes>{encodeArgs(2)});
+	testRunTimeGas("h(uint256)", vector<bytes>{encodeArgs(2)});
+}
+
+BOOST_AUTO_TEST_CASE(balance_gas)
+{
+	char const* sourceCode = R"(
+		contract A {
+			function lookup_balance(address a) returns (uint) {
+				return a.balance;
+			}
+		}
+	)";
+	testCreationTimeGas(sourceCode);
+	testRunTimeGas("lookup_balance(address)", vector<bytes>{encodeArgs(2), encodeArgs(100)});
+}
+
+BOOST_AUTO_TEST_CASE(extcodesize_gas)
+{
+	char const* sourceCode = R"(
+		contract A {
+			function f() returns (uint _s) {
+				assembly {
+					_s := extcodesize(0x30)
+				}
+			}
+		}
+	)";
+	testCreationTimeGas(sourceCode);
+	testRunTimeGas("f()", vector<bytes>{encodeArgs()});
 }
 
 BOOST_AUTO_TEST_SUITE_END()

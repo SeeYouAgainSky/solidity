@@ -33,17 +33,21 @@ REPO_ROOT="$(dirname "$0")"/..
 echo "Running commandline tests..."
 "$REPO_ROOT/test/cmdlineTests.sh"
 
-echo "Checking that StandardToken.sol, owned.sol and mortal.sol produce bytecode..."
-output=$("$REPO_ROOT"/build/solc/solc --bin "$REPO_ROOT"/std/*.sol 2>/dev/null | grep "ffff" | wc -l)
-test "${output//[[:blank:]]/}" = "3"
-
 # This conditional is only needed because we don't have a working Homebrew
 # install for `eth` at the time of writing, so we unzip the ZIP file locally
 # instead.  This will go away soon.
 if [[ "$OSTYPE" == "darwin"* ]]; then
     ETH_PATH="$REPO_ROOT/eth"
-else
+elif [ -z $CI ]; then
     ETH_PATH="eth"
+else
+    mkdir -p /tmp/test
+    wget -O /tmp/test/eth https://github.com/ethereum/cpp-ethereum/releases/download/solidityTester/eth
+    test "$(shasum /tmp/test/eth)" = "c132e8989229e4840831a4fb1a1d058b732a11d5  /tmp/test/eth"
+    sync
+    chmod +x /tmp/test/eth
+    sync # Otherwise we might get a "text file busy" error
+    ETH_PATH="/tmp/test/eth"
 fi
 
 # This trailing ampersand directs the shell to run the command in the background,

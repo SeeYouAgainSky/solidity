@@ -43,9 +43,8 @@
 #pragma once
 
 #include <libdevcore/Common.h>
-#include <libsolidity/interface/Utils.h>
 #include <libsolidity/interface/Exceptions.h>
-#include <libdevcore/UndefMacros.h>
+#include <libsolidity/parsing/UndefMacros.h>
 
 namespace dev
 {
@@ -144,7 +143,7 @@ namespace solidity
 	K(As, "as", 0)                                                     \
 	K(Assembly, "assembly", 0)                                         \
 	K(Break, "break", 0)                                               \
-	K(Const, "constant", 0)                                            \
+	K(Constant, "constant", 0)                                         \
 	K(Continue, "continue", 0)                                         \
 	K(Contract, "contract", 0)                                         \
 	K(Do, "do", 0)                                                     \
@@ -157,6 +156,7 @@ namespace solidity
 	K(Hex, "hex", 0)                                                   \
 	K(If, "if", 0)                                                     \
 	K(Indexed, "indexed", 0)                                           \
+	K(Interface, "interface", 0)                                       \
 	K(Internal, "internal", 0)                                         \
 	K(Import, "import", 0)                                             \
 	K(Is, "is", 0)                                                     \
@@ -169,6 +169,7 @@ namespace solidity
 	K(Public, "public", 0)                                             \
 	K(Pragma, "pragma", 0)                                             \
 	K(Private, "private", 0)                                           \
+	K(Pure, "pure", 0)                                                 \
 	K(Return, "return", 0)                                             \
 	K(Returns, "returns", 0)                                           \
 	K(Storage, "storage", 0)                                           \
@@ -176,6 +177,7 @@ namespace solidity
 	K(Throw, "throw", 0)                                               \
 	K(Using, "using", 0)                                               \
 	K(Var, "var", 0)                                                   \
+	K(View, "view", 0)                                                 \
 	K(While, "while", 0)                                               \
 	\
 	/* Ether subdenominations */                                       \
@@ -225,19 +227,16 @@ namespace solidity
 	K(Final, "final", 0)                                               \
 	K(In, "in", 0)                                                     \
 	K(Inline, "inline", 0)                                             \
-	K(Interface, "interface", 0)                                       \
 	K(Let, "let", 0)                                                   \
 	K(Match, "match", 0)                                               \
 	K(NullLiteral, "null", 0)                                          \
 	K(Of, "of", 0)                                                     \
-	K(Pure, "pure", 0)                                                 \
 	K(Relocatable, "relocatable", 0)                                   \
 	K(Static, "static", 0)                                             \
 	K(Switch, "switch", 0)                                             \
 	K(Try, "try", 0)                                                   \
 	K(Type, "type", 0)                                                 \
 	K(TypeOf, "typeof", 0)                                             \
-	K(View, "view", 0)                                                 \
 	/* Illegal token - not able to scan. */                            \
 	T(Illegal, "ILLEGAL", 0)                                           \
 	\
@@ -291,6 +290,7 @@ public:
 	static bool isVisibilitySpecifier(Value op) { return isVariableVisibilitySpecifier(op) || op == External; }
 	static bool isVariableVisibilitySpecifier(Value op) { return op == Public || op == Private || op == Internal; }
 	static bool isLocationSpecifier(Value op) { return op == Memory || op == Storage; }
+	static bool isStateMutabilitySpecifier(Value op) { return op == Pure || op == Constant || op == View || op == Payable; }
 	static bool isEtherSubdenomination(Value op) { return op == SubWei || op == SubSzabo || op == SubFinney || op == SubEther; }
 	static bool isTimeSubdenomination(Value op) { return op == SubSecond || op == SubMinute || op == SubHour || op == SubDay || op == SubWeek || op == SubYear; }
 	static bool isReservedKeyword(Value op) { return (Abstract <= op && op <= TypeOf); }

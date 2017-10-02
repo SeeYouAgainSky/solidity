@@ -45,13 +45,15 @@ public:
 		bool _userDocumentation
 	)
 	{
-		ETH_TEST_REQUIRE_NO_THROW(m_compilerStack.parse("pragma solidity >=0.0;\n" + _code), "Parsing failed");
+		m_compilerStack.reset(false);
+		m_compilerStack.addSource("", "pragma solidity >=0.0;\n" + _code);
+		BOOST_REQUIRE_MESSAGE(m_compilerStack.parseAndAnalyze(), "Parsing contract failed");
 
 		Json::Value generatedDocumentation;
 		if (_userDocumentation)
-			generatedDocumentation = m_compilerStack.metadata("", DocumentationType::NatspecUser);
+			generatedDocumentation = m_compilerStack.natspecUser("");
 		else
-			generatedDocumentation = m_compilerStack.metadata("", DocumentationType::NatspecDev);
+			generatedDocumentation = m_compilerStack.natspecDev("");
 		Json::Value expectedDocumentation;
 		m_reader.parse(_expectedDocumentationString, expectedDocumentation);
 		BOOST_CHECK_MESSAGE(
@@ -63,7 +65,9 @@ public:
 
 	void expectNatspecError(std::string const& _code)
 	{
-		BOOST_CHECK(!m_compilerStack.parse(_code));
+		m_compilerStack.reset(false);
+		m_compilerStack.addSource("", "pragma solidity >=0.0;\n" + _code);
+		BOOST_CHECK(!m_compilerStack.parseAndAnalyze());
 		BOOST_REQUIRE(Error::containsErrorOfType(m_compilerStack.errors(), Error::Type::DocstringParsingError));
 	}
 

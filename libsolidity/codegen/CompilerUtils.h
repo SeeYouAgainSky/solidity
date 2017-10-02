@@ -33,19 +33,25 @@ class Type; // forward
 class CompilerUtils
 {
 public:
-	CompilerUtils(CompilerContext& _context): m_context(_context) {}
+	explicit CompilerUtils(CompilerContext& _context): m_context(_context) {}
 
 	/// Stores the initial value of the free-memory-pointer at its position;
 	void initialiseFreeMemoryPointer();
 	/// Copies the free memory pointer to the stack.
+	/// Stack pre:
+	/// Stack post: <mem_start>
 	void fetchFreeMemoryPointer();
 	/// Stores the free memory pointer from the stack.
+	/// Stack pre: <mem_end>
+	/// Stack post:
 	void storeFreeMemoryPointer();
 	/// Allocates a number of bytes in memory as given on the stack.
 	/// Stack pre: <size>
 	/// Stack post: <mem_start>
 	void allocateMemory();
 	/// Appends code that transforms memptr to (memptr - free_memptr) memptr
+	/// Stack pre: <mem_end>
+	/// Stack post: <size> <mem_start>
 	void toSizeAfterFreeMemoryPointer();
 
 	/// Loads data from memory to the stack.
@@ -96,10 +102,47 @@ public:
 	/// @note the locations of target reference types are ignored, because it will always be
 	/// memory.
 	void encodeToMemory(
-		TypePointers const& _givenTypes = {},
-		TypePointers const& _targetTypes = {},
-		bool _padToWords = true,
-		bool _copyDynamicDataInPlace = false,
+		TypePointers const& _givenTypes,
+		TypePointers const& _targetTypes,
+		bool _padToWords,
+		bool _copyDynamicDataInPlace,
+		bool _encodeAsLibraryTypes = false
+	);
+
+	/// Special case of @a encodeToMemory which assumes tight packing, e.g. no zero padding
+	/// and dynamic data is encoded in-place.
+	/// Stack pre: <value0> <value1> ... <valueN-1> <head_start>
+	/// Stack post: <mem_ptr>
+	void packedEncode(
+		TypePointers const& _givenTypes,
+		TypePointers const& _targetTypes,
+		bool _encodeAsLibraryTypes = false
+	)
+	{
+		encodeToMemory(_givenTypes, _targetTypes, false, true, _encodeAsLibraryTypes);
+	}
+
+	/// Special case of @a encodeToMemory which assumes that everything is padded to words
+	/// and dynamic data is not copied in place (i.e. a proper ABI encoding).
+	/// Stack pre: <value0> <value1> ... <valueN-1> <head_start>
+	/// Stack post: <mem_ptr>
+	void abiEncode(
+		TypePointers const& _givenTypes,
+		TypePointers const& _targetTypes,
+		bool _encodeAsLibraryTypes = false
+	)
+	{
+		encodeToMemory(_givenTypes, _targetTypes, true, false, _encodeAsLibraryTypes);
+	}
+
+	/// Special case of @a encodeToMemory which assumes that everything is padded to words
+	/// and dynamic data is not copied in place (i.e. a proper ABI encoding).
+	/// Uses a new, less tested encoder implementation.
+	/// Stack pre: <value0> <value1> ... <valueN-1> <head_start>
+	/// Stack post: <mem_ptr>
+	void abiEncodeV2(
+		TypePointers const& _givenTypes,
+		TypePointers const& _targetTypes,
 		bool _encodeAsLibraryTypes = false
 	);
 
@@ -109,15 +152,13 @@ public:
 	/// Stack post: <updated_memptr>
 	void zeroInitialiseMemoryArray(ArrayType const& _type);
 
-	/// Uses a CALL to the identity contract to perform a memory-to-memory copy.
-	/// Stack pre: <size> <target> <source>
-	/// Stack post:
-	void memoryCopyPrecompile();
 	/// Copies full 32 byte words in memory (regions cannot overlap), i.e. may copy more than length.
+	/// Length can be zero, in this case, it copies nothing.
 	/// Stack pre: <size> <target> <source>
 	/// Stack post:
 	void memoryCopy32();
 	/// Copies data in memory (regions cannot overlap).
+	/// Length can be zero, in this case, it copies nothing.
 	/// Stack pre: <size> <target> <source>
 	/// Stack post:
 	void memoryCopy();
@@ -139,7 +180,15 @@ public:
 	/// If @a _cleanupNeeded, high order bits cleanup is also done if no type conversion would be
 	/// necessary.
 	/// If @a _chopSignBits, the function resets the signed bits out of the width of the signed integer.
-	void convertType(Type const& _typeOnStack, Type const& _targetType, bool _cleanupNeeded = false, bool _chopSignBits = false);
+	/// If @a _asPartOfArgumentDecoding is true, failed conversions are flagged via REVERT,
+	/// otherwise they are flagged with INVALID.
+	void convertType(
+		Type const& _typeOnStack,
+		Type const& _targetType,
+		bool _cleanupNeeded = false,
+		bool _chopSignBits = false,
+		bool _asPartOfArgumentDecoding = false
+	);
 
 	/// Creates a zero-value for the given type and puts it onto the stack. This might allocate
 	/// memory for memory references.
@@ -170,7 +219,17 @@ public:
 	static unsigned sizeOnStack(std::vector<T> const& _variables);
 	static unsigned sizeOnStack(std::vector<std::shared_ptr<Type const>> const& _variableTypes);
 
-	/// Appends code that computes tha SHA3 hash of the topmost stack element of 32 byte type.
+	/// Helper function to shift top value on the stack to the left.
+	/// Stack pre: <value> <shift_by_bits>
+	/// Stack post: <shifted_value>
+	void leftShiftNumberOnStack(unsigned _bits);
+
+	/// Helper function to shift top value on the stack to the right.
+	/// Stack pre: <value> <shift_by_bits>
+	/// Stack post: <shifted_value>
+	void rightShiftNumberOnStack(unsigned _bits, bool _isSigned = false);
+
+	/// Appends code that computes tha Keccak-256 hash of the topmost stack element of 32 byte type.
 	void computeHashStatic();
 
 	/// Bytes we need to the start of call data.

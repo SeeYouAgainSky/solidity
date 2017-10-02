@@ -68,7 +68,7 @@ creator. Save it. Then ``selfdestruct(creator);`` to kill and return funds.
 
 Note that if you ``import "mortal"`` at the top of your contracts and declare
 ``contract SomeContract is mortal { ...`` and compile with a compiler that already
-has it (which includes `browser-solidity <https://ethereum.github.io/browser-solidity/>`_), then
+has it (which includes `Remix <https://remix.ethereum.org/>`_), then
 ``kill()`` is taken care of for you. Once a contract is "mortal", then you can
 ``contractname.kill.sendTransaction({from:eth.coinbase})``, just the same as my
 examples.
@@ -103,11 +103,6 @@ This is a limitation of the EVM and will be solved with the next protocol update
 
 Returning variably-sized data as part of an external transaction or call is fine.
 
-How do you represent ``double``/``float`` in Solidity?
-======================================================
-
-This is not yet possible.
-
 Is it possible to in-line initialize an array like so: ``string[] myarray = ["a", "b"];``
 =========================================================================================
 
@@ -116,30 +111,14 @@ array in the return statement. Pretty cool, huh?
 
 Example::
 
+    pragma solidity ^0.4.0;
+
     contract C {
         function f() returns (uint8[5]) {
             string[4] memory adaArr = ["This", "is", "an", "array"];
             return ([1, 2, 3, 4, 5]);
         }
     }
-
-Are timestamps (``now,`` ``block.timestamp``) reliable?
-=======================================================
-
-This depends on what you mean by "reliable".
-In general, they are supplied by miners and are therefore vulnerable.
-
-Unless someone really messes up the blockchain or the clock on
-your computer, you can make the following assumptions:
-
-You publish a transaction at a time X, this transaction contains same
-code that calls ``now`` and is included in a block whose timestamp is Y
-and this block is included into the canonical chain (published) at a time Z.
-
-The value of ``now`` will be identical to Y and X <= Y <= Z.
-
-Never use ``now`` or ``block.hash`` as a source of randomness, unless you know
-what you are doing!
 
 Can a contract function return a ``struct``?
 ============================================
@@ -153,37 +132,6 @@ Enums are not supported by the ABI, they are just supported by Solidity.
 You have to do the mapping yourself for now, we might provide some help
 later.
 
-What is the deal with ``function () { ... }`` inside Solidity contracts? How can a function not have a name?
-============================================================================================================
-
-This function is called "fallback function" and it
-is called when someone just sent Ether to the contract without
-providing any data or if someone messed up the types so that they tried to
-call a function that does not exist.
-
-The default behaviour (if no fallback function is explicitly given) in
-these situations is to throw an exception.
-
-If the contract is meant to receive Ether with simple transfers, you
-should implement the fallback function as
-
-``function() payable { }``
-
-Another use of the fallback function is to e.g. register that your
-contract received ether by using an event.
-
-*Attention*: If you implement the fallback function take care that it uses as
-little gas as possible, because ``send()`` will only supply a limited amount.
-
-Is it possible to pass arguments to the fallback function?
-==========================================================
-
-The fallback function cannot take parameters.
-
-Under special circumstances, you can send data. If you take care
-that none of the other functions is invoked, you can access the data
-by ``msg.data``.
-
 Can state variables be initialized in-line?
 ===========================================
 
@@ -191,6 +139,8 @@ Yes, this is possible for all types (even for structs). However, for arrays it
 should be noted that you must declare them as static memory arrays.
 
 Examples::
+
+    pragma solidity ^0.4.0;
 
     contract C {
         struct S {
@@ -200,9 +150,8 @@ Examples::
 
         S public x = S(1, 2);
         string name = "Ada";
-        string[4] memory adaArr = ["This", "is", "an", "array"];
+        string[4] adaArr = ["This", "is", "an", "array"];
     }
-
 
     contract D {
         C c = new C();
@@ -227,13 +176,6 @@ Better use ``for (uint i = 0; i < a.length...``
 
 See `struct_and_for_loop_tester.sol <https://github.com/fivedogit/solidity-baby-steps/blob/master/contracts/65_struct_and_for_loop_tester.sol>`_.
 
-What character set does Solidity use?
-=====================================
-
-Solidity is character set agnostic concerning strings in the source code, although
-UTF-8 is recommended. Identifiers (variables, functions, ...) can only use
-ASCII.
-
 What are some examples of basic string manipulation (``substring``, ``indexOf``, ``charAt``, etc)?
 ==================================================================================================
 
@@ -242,6 +184,8 @@ which will be extended in the future. In addition, Arachnid has written `solidit
 
 For now, if you want to modify a string (even when you only want to know its length),
 you should always convert it to a ``bytes`` first::
+
+    pragma solidity ^0.4.0;
 
     contract C {
         string s;
@@ -288,6 +232,8 @@ situation.
 
 If you do not want to throw, you can return a pair::
 
+    pragma solidity ^0.4.0;
+
     contract C {
         uint[] counters;
 
@@ -302,9 +248,9 @@ If you do not want to throw, you can return a pair::
         function checkCounter(uint index) {
             var (counter, error) = getCounter(index);
             if (error) {
-                ...
+                // ...
             } else {
-                ...
+                // ...
             }
         }
     }
@@ -358,10 +304,13 @@ There are defaults for the storage location depending on which type
 of variable it concerns:
 
 * state variables are always in storage
-* function arguments are always in memory
-* local variables always reference storage
+* function arguments are in memory by default
+* local variables of struct, array or mapping type reference storage by default
+* local variables of value type (i.e. neither array, nor struct nor mapping) are stored in the stack
 
 Example::
+
+    pragma solidity ^0.4.0;
 
     contract C {
         uint[] data1;
@@ -375,7 +324,7 @@ Example::
             append(data2);
         }
 
-        function append(uint[] storage d) {
+        function append(uint[] storage d) internal {
             d.push(1);
         }
     }
@@ -393,6 +342,9 @@ A common mistake is to declare a local variable and assume that it will
 be created in memory, although it will be created in storage::
 
     /// THIS CONTRACT CONTAINS AN ERROR
+
+    pragma solidity ^0.4.0;
+
     contract C {
         uint someVariable;
         uint[] data;
@@ -417,6 +369,8 @@ slot ``0``) is modified by ``x.push(2)``.
 
 The correct way to do this is the following::
 
+    pragma solidity ^0.4.0;
+
     contract C {
         uint someVariable;
         uint[] data;
@@ -426,23 +380,6 @@ The correct way to do this is the following::
             x.push(2);
         }
     }
-
-What is the difference between ``bytes`` and ``byte[]``?
-========================================================
-
-``bytes`` is usually more efficient: When used as arguments to functions (i.e. in
-CALLDATA) or in memory, every single element of a ``byte[]`` is padded to 32
-bytes which wastes 31 bytes per element.
-
-Is it possible to send a value while calling an overloaded function?
-====================================================================
-
-It's a known missing feature. https://www.pivotaltracker.com/story/show/92020468
-as part of https://www.pivotaltracker.com/n/projects/1189488
-
-Best solution currently see is to introduce a special case for gas and value and
-just re-check whether they are present at the point of overload resolution.
-
 
 ******************
 Advanced Questions
@@ -489,35 +426,18 @@ Note2: Optimizing storage access can pull the gas costs down considerably, becau
 currently do not work across loops and also have a problem with bounds checking.
 You might get much better results in the future, though.
 
-What does ``p.recipient.call.value(p.amount)(p.data)`` do?
-==========================================================
-
-Every external function call in Solidity can be modified in two ways:
-
-1. You can add Ether together with the call
-2. You can limit the amount of gas available to the call
-
-This is done by "calling a function on the function":
-
-``f.gas(2).value(20)()`` calls the modified function ``f`` and thereby sending 20
-Wei and limiting the gas to 2 (so this function call will most likely go out of
-gas and return your 20 Wei).
-
-In the above example, the low-level function ``call`` is used to invoke another
-contract with ``p.data`` as payload and ``p.amount`` Wei is sent with that call.
-
 What happens to a ``struct``'s mapping when copying over a ``struct``?
 ======================================================================
 
 This is a very interesting question. Suppose that we have a contract field set up like such::
 
     struct user {
-        mapping(string => address) usedContracts;
+        mapping(string => string) comments;
     }
 
     function somefunction {
        user user1;
-       user1.usedContracts["Hello"] = "World";
+       user1.comments["Hello"] = "World";
        user user2 = user1;
     }
 
@@ -533,10 +453,11 @@ In the case of a ``contract A`` calling a new instance of ``contract B``, parent
 You will need to make sure that you have both contracts aware of each other's presence and that ``contract B`` has a ``payable`` constructor.
 In this example::
 
+    pragma solidity ^0.4.0;
+
     contract B {
         function B() payable {}
     }
-
 
     contract A {
         address child;
@@ -580,6 +501,8 @@ Can a contract pass an array (static size) or string or ``bytes`` (dynamic size)
 Sure. Take care that if you cross the memory / storage boundary,
 independent copies will be created::
 
+    pragma solidity ^0.4.0;
+
     contract C {
         uint[20] x;
 
@@ -588,11 +511,11 @@ independent copies will be created::
             h(x);
         }
 
-        function g(uint[20] y) {
+        function g(uint[20] y) internal {
             y[2] = 3;
         }
 
-        function h(uint[20] storage y) {
+        function h(uint[20] storage y) internal {
             y[3] = 4;
         }
     }
@@ -641,7 +564,7 @@ Not yet, as this requires two levels of dynamic arrays (``string`` is a dynamic 
 If you issue a call for an array, it is possible to retrieve the whole array? Or must you write a helper function for that?
 ===========================================================================================================================
 
-The automatic getter function for a public state variable of array type only returns
+The automatic :ref:`getter function<getter-functions>`  for a public state variable of array type only returns
 individual elements. If you want to return the complete array, you have to
 manually write a function to do that.
 
@@ -665,8 +588,7 @@ What does the following strange check do in the Custom Token contract?
 
 ::
 
-    if (balanceOf[_to] + _value < balanceOf[_to])
-        throw;
+    require((balanceOf[_to] + _value) >= balanceOf[_to]);
 
 Integers in Solidity (and most other machine-related programming languages) are restricted to a certain range.
 For ``uint256``, this is ``0`` up to ``2**256 - 1``. If the result of some operation on those numbers

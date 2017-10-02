@@ -23,6 +23,7 @@
 
 #include <libsolidity/analysis/DocStringAnalyser.h>
 #include <libsolidity/ast/AST.h>
+#include <libsolidity/interface/ErrorReporter.h>
 #include <libsolidity/parsing/DocStringParser.h>
 
 using namespace std;
@@ -37,41 +38,31 @@ bool DocStringAnalyser::analyseDocStrings(SourceUnit const& _sourceUnit)
 	return !m_errorOccured;
 }
 
-bool DocStringAnalyser::visit(ContractDefinition const& _node)
+bool DocStringAnalyser::visit(ContractDefinition const& _contract)
 {
-	static const set<string> validTags = set<string>{"author", "title", "dev", "notice", "why3"};
-	parseDocStrings(_node, _node.annotation(), validTags, "contracts");
+	static const set<string> validTags = set<string>{"author", "title", "dev", "notice"};
+	parseDocStrings(_contract, _contract.annotation(), validTags, "contracts");
 
 	return true;
 }
 
-bool DocStringAnalyser::visit(FunctionDefinition const& _node)
+bool DocStringAnalyser::visit(FunctionDefinition const& _function)
 {
-	handleCallable(_node, _node, _node.annotation());
+	handleCallable(_function, _function, _function.annotation());
 	return true;
 }
 
-bool DocStringAnalyser::visit(ModifierDefinition const& _node)
+bool DocStringAnalyser::visit(ModifierDefinition const& _modifier)
 {
-	handleCallable(_node, _node, _node.annotation());
-
-	return true;
-}
-
-bool DocStringAnalyser::visit(EventDefinition const& _node)
-{
-	handleCallable(_node, _node, _node.annotation());
+	handleCallable(_modifier, _modifier, _modifier.annotation());
 
 	return true;
 }
 
-bool DocStringAnalyser::visitNode(ASTNode const& _node)
+bool DocStringAnalyser::visit(EventDefinition const& _event)
 {
-	if (auto node = dynamic_cast<Statement const*>(&_node))
-	{
-		static const set<string> validTags = {"why3"};
-		parseDocStrings(*node, node->annotation(), validTags, "statements");
-	}
+	handleCallable(_event, _event, _event.annotation());
+
 	return true;
 }
 
@@ -81,7 +72,7 @@ void DocStringAnalyser::handleCallable(
 	DocumentedAnnotation& _annotation
 )
 {
-	static const set<string> validTags = set<string>{"author", "dev", "notice", "return", "param", "why3"};
+	static const set<string> validTags = set<string>{"author", "dev", "notice", "return", "param"};
 	parseDocStrings(_node, _annotation, validTags, "functions");
 
 	set<string> validParams;
@@ -110,7 +101,7 @@ void DocStringAnalyser::parseDocStrings(
 	DocStringParser parser;
 	if (_node.documentation() && !_node.documentation()->empty())
 	{
-		if (!parser.parse(*_node.documentation(), m_errors))
+		if (!parser.parse(*_node.documentation(), m_errorReporter))
 			m_errorOccured = true;
 		_annotation.docTags = parser.tags();
 	}
@@ -121,8 +112,6 @@ void DocStringAnalyser::parseDocStrings(
 
 void DocStringAnalyser::appendError(string const& _description)
 {
-	auto err = make_shared<Error>(Error::Type::DocstringParsingError);
-	*err << errinfo_comment(_description);
-	m_errors.push_back(err);
 	m_errorOccured = true;
+	m_errorReporter.docstringParsingError(_description);
 }

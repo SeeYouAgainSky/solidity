@@ -52,7 +52,7 @@
 
 #include <algorithm>
 #include <tuple>
-#include <libsolidity/interface/Utils.h>
+#include <libsolidity/interface/Exceptions.h>
 #include <libsolidity/parsing/Scanner.h>
 
 using namespace std;
@@ -435,7 +435,7 @@ void Scanner::scanToken()
 		m_nextToken.location.start = sourcePos();
 		switch (m_char)
 		{
-		case '\n': // fall-through
+		case '\n':
 		case ' ':
 		case '\t':
 			token = selectToken(Token::Whitespace);
@@ -758,6 +758,9 @@ Token::Value Scanner::scanNumber(char _charSeen)
 				while (isHexDigit(m_char))
 					addLiteralCharAndAdvance();
 			}
+			else if (isDecimalDigit(m_char))
+				// We do not allow octal numbers
+				return Token::Illegal;
 		}
 		// Parse decimal digits and allow trailing fractional part.
 		if (kind == DECIMAL)

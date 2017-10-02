@@ -21,9 +21,13 @@
 
 #pragma once
 
-#include <vector>
+#include <libevmasm/Exceptions.h>
+
+#include <libdevcore/Assertions.h>
 #include <libdevcore/CommonData.h>
 #include <libdevcore/CommonIO.h>
+
+#include <vector>
 
 namespace dev
 {
@@ -59,11 +63,11 @@ public:
 
 	explicit ConstantOptimisationMethod(Params const& _params, u256 const& _value):
 		m_params(_params), m_value(_value) {}
-	virtual bigint gasNeeded() = 0;
+	virtual bigint gasNeeded() const = 0;
 	/// Executes the method, potentially appending to the assembly and returns a vector of
 	/// assembly items the constant should be relpaced with in one sweep.
 	/// If the vector is empty, the constants will not be deleted.
-	virtual AssemblyItems execute(Assembly& _assembly) = 0;
+	virtual AssemblyItems execute(Assembly& _assembly) const = 0;
 
 protected:
 	size_t dataSize() const { return std::max<size_t>(1, dev::bytesRequired(m_value)); }
@@ -80,14 +84,14 @@ protected:
 		bigint const& _runGas,
 		bigint const& _repeatedDataGas,
 		bigint const& _uniqueDataGas
-	)
+	) const
 	{
 		// _runGas is not multiplied by _multiplicity because the runs are "per opcode"
 		return m_params.runs * _runGas + m_params.multiplicity * _repeatedDataGas + _uniqueDataGas;
 	}
 
 	/// Replaces all constants i by the code given in @a _replacement[i].
-	static void replaceConstants(AssemblyItems& _items, std::map<u256, AssemblyItems> const& _replacement);
+	static void replaceConstants(AssemblyItems& _items, std::map<u256, AssemblyItems> const& _replacements);
 
 	Params m_params;
 	u256 const& m_value;
@@ -102,8 +106,8 @@ class LiteralMethod: public ConstantOptimisationMethod
 public:
 	explicit LiteralMethod(Params const& _params, u256 const& _value):
 		ConstantOptimisationMethod(_params, _value) {}
-	virtual bigint gasNeeded() override;
-	virtual AssemblyItems execute(Assembly&) override { return AssemblyItems{}; }
+	virtual bigint gasNeeded() const override;
+	virtual AssemblyItems execute(Assembly&) const override { return AssemblyItems{}; }
 };
 
 /**
@@ -113,11 +117,11 @@ class CodeCopyMethod: public ConstantOptimisationMethod
 {
 public:
 	explicit CodeCopyMethod(Params const& _params, u256 const& _value);
-	virtual bigint gasNeeded() override;
-	virtual AssemblyItems execute(Assembly& _assembly) override;
+	virtual bigint gasNeeded() const override;
+	virtual AssemblyItems execute(Assembly& _assembly) const override;
 
 protected:
-	AssemblyItems const& copyRoutine() const;
+	static AssemblyItems const& copyRoutine();
 };
 
 /**
@@ -130,10 +134,15 @@ public:
 		ConstantOptimisationMethod(_params, _value)
 	{
 		m_routine = findRepresentation(m_value);
+		assertThrow(
+			checkRepresentation(m_value, m_routine),
+			OptimizerException,
+			"Invalid constant expression created."
+		);
 	}
 
-	virtual bigint gasNeeded() override { return gasNeeded(m_routine); }
-	virtual AssemblyItems execute(Assembly&) override
+	virtual bigint gasNeeded() const override { return gasNeeded(m_routine); }
+	virtual AssemblyItems execute(Assembly&) const override
 	{
 		return m_routine;
 	}
@@ -141,8 +150,12 @@ public:
 protected:
 	/// Tries to recursively find a way to compute @a _value.
 	AssemblyItems findRepresentation(u256 const& _value);
-	bigint gasNeeded(AssemblyItems const& _routine);
+	/// Recomputes the value from the calculated representation and checks for correctness.
+	static bool checkRepresentation(u256 const& _value, AssemblyItems const& _routine);
+	bigint gasNeeded(AssemblyItems const& _routine) const;
 
+	/// Counter for the complexity of optimization, will stop when it reaches zero.
+	size_t m_maxSteps = 10000;
 	AssemblyItems m_routine;
 };
 

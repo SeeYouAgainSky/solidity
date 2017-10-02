@@ -24,7 +24,7 @@
 #include <memory>
 #include <libsolidity/parsing/Scanner.h>
 #include <libsolidity/parsing/Parser.h>
-#include <libsolidity/interface/Exceptions.h>
+#include <libsolidity/interface/ErrorReporter.h>
 #include "../TestHelper.h"
 #include "ErrorCheck.h"
 
@@ -41,7 +41,8 @@ namespace
 {
 ASTPointer<ContractDefinition> parseText(std::string const& _source, ErrorList& _errors)
 {
-	ASTPointer<SourceUnit> sourceUnit = Parser(_errors).parse(std::make_shared<Scanner>(CharStream(_source)));
+	ErrorReporter errorReporter(_errors);
+	ASTPointer<SourceUnit> sourceUnit = Parser(errorReporter).parse(std::make_shared<Scanner>(CharStream(_source)));
 	if (!sourceUnit)
 		return ASTPointer<ContractDefinition>();
 	for (ASTPointer<ASTNode> const& node: sourceUnit->nodes())
@@ -166,6 +167,90 @@ BOOST_AUTO_TEST_CASE(single_function_param)
 	BOOST_CHECK(successParse(text));
 }
 
+BOOST_AUTO_TEST_CASE(single_function_param_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			function(uint a,) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
+BOOST_AUTO_TEST_CASE(single_return_param_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			function() returns (uint a,) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
+BOOST_AUTO_TEST_CASE(single_modifier_arg_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			modifier modTest(uint a,) { _; }
+			function(uint a) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
+BOOST_AUTO_TEST_CASE(single_event_arg_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			event Test(uint a,);
+			function(uint a) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
+BOOST_AUTO_TEST_CASE(multiple_function_param_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			function(uint a, uint b,) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
+BOOST_AUTO_TEST_CASE(multiple_return_param_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			function() returns (uint a, uint b,) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
+BOOST_AUTO_TEST_CASE(multiple_modifier_arg_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			modifier modTest(uint a, uint b,) { _; }
+			function(uint a) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
+BOOST_AUTO_TEST_CASE(multiple_event_arg_trailing_comma)
+{
+	char const* text = R"(
+		contract test {
+			event Test(uint a, uint b,);
+			function(uint a) {}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma in parameter list.");
+}
+
 BOOST_AUTO_TEST_CASE(function_no_body)
 {
 	char const* text = R"(
@@ -196,6 +281,17 @@ BOOST_AUTO_TEST_CASE(missing_argument_in_named_args)
 		}
 	)";
 	CHECK_PARSE_ERROR(text, "Expected primary expression");
+}
+
+BOOST_AUTO_TEST_CASE(trailing_comma_in_named_args)
+{
+	char const* text = R"(
+		contract test {
+			function a(uint a, uint b, uint c) returns (uint r) { r = a * 100 + b * 10 + c * 1; }
+			function b() returns (uint r) { r = a({a: 1, b: 2, c: 3, }); }
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Unexpected trailing comma");
 }
 
 BOOST_AUTO_TEST_CASE(two_exact_functions)
@@ -238,7 +334,7 @@ BOOST_AUTO_TEST_CASE(function_natspec_documentation)
 	FunctionDefinition const* function = nullptr;
 	auto functions = contract->definedFunctions();
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(0), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(0), "Failed to retrieve function");
 	checkFunctionNatspec(function, "This is a test function");
 }
 
@@ -256,7 +352,7 @@ BOOST_AUTO_TEST_CASE(function_normal_comments)
 	ErrorList errors;
 	ASTPointer<ContractDefinition> contract = parseText(text, errors);
 	auto functions = contract->definedFunctions();
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(0), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(0), "Failed to retrieve function");
 	BOOST_CHECK_MESSAGE(function->documentation() == nullptr,
 						"Should not have gotten a Natspecc comment for this function");
 }
@@ -282,17 +378,17 @@ BOOST_AUTO_TEST_CASE(multiple_functions_natspec_documentation)
 	ASTPointer<ContractDefinition> contract = parseText(text, errors);
 	auto functions = contract->definedFunctions();
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(0), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(0), "Failed to retrieve function");
 	checkFunctionNatspec(function, "This is test function 1");
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(1), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(1), "Failed to retrieve function");
 	checkFunctionNatspec(function, "This is test function 2");
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(2), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(2), "Failed to retrieve function");
 	BOOST_CHECK_MESSAGE(function->documentation() == nullptr,
 						"Should not have gotten natspec comment for functionName3()");
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(3), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(3), "Failed to retrieve function");
 	checkFunctionNatspec(function, "This is test function 4");
 }
 
@@ -311,7 +407,7 @@ BOOST_AUTO_TEST_CASE(multiline_function_documentation)
 	ErrorList errors;
 	ASTPointer<ContractDefinition> contract = parseText(text, errors);
 	auto functions = contract->definedFunctions();
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(0), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(0), "Failed to retrieve function");
 	checkFunctionNatspec(function, "This is a test function\n"
 						 " and it has 2 lines");
 }
@@ -339,10 +435,10 @@ BOOST_AUTO_TEST_CASE(natspec_comment_in_function_body)
 	ASTPointer<ContractDefinition> contract = parseText(text, errors);
 	auto functions = contract->definedFunctions();
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(0), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(0), "Failed to retrieve function");
 	checkFunctionNatspec(function, "fun1 description");
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(1), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(1), "Failed to retrieve function");
 	checkFunctionNatspec(function, "This is a test function\n"
 						 " and it has 2 lines");
 }
@@ -368,7 +464,7 @@ BOOST_AUTO_TEST_CASE(natspec_docstring_between_keyword_and_signature)
 	ASTPointer<ContractDefinition> contract = parseText(text, errors);
 	auto functions = contract->definedFunctions();
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(0), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(0), "Failed to retrieve function");
 	BOOST_CHECK_MESSAGE(!function->documentation(),
 						"Shouldn't get natspec docstring for this function");
 }
@@ -394,7 +490,7 @@ BOOST_AUTO_TEST_CASE(natspec_docstring_after_signature)
 	ASTPointer<ContractDefinition> contract = parseText(text, errors);
 	auto functions = contract->definedFunctions();
 
-	ETH_TEST_REQUIRE_NO_THROW(function = functions.at(0), "Failed to retrieve function");
+	BOOST_REQUIRE_MESSAGE(function = functions.at(0), "Failed to retrieve function");
 	BOOST_CHECK_MESSAGE(!function->documentation(),
 						"Shouldn't get natspec docstring for this function");
 }
@@ -886,7 +982,46 @@ BOOST_AUTO_TEST_CASE(multiple_visibility_specifiers)
 		contract c {
 			uint private internal a;
 		})";
-	CHECK_PARSE_ERROR(text, "Visibility already specified");
+	CHECK_PARSE_ERROR(text, "Visibility already specified as \"private\".");
+	text = R"(
+		contract c {
+			function f() private external {}
+		})";
+	CHECK_PARSE_ERROR(text, "Visibility already specified as \"private\".");
+}
+
+BOOST_AUTO_TEST_CASE(multiple_statemutability_specifiers)
+{
+	char const* text = R"(
+		contract c {
+			function f() payable payable {}
+		})";
+	CHECK_PARSE_ERROR(text, "State mutability already specified as \"payable\".");
+	text = R"(
+		contract c {
+			function f() constant constant {}
+		})";
+	CHECK_PARSE_ERROR(text, "State mutability already specified as \"view\".");
+	text = R"(
+		contract c {
+			function f() constant view {}
+		})";
+	CHECK_PARSE_ERROR(text, "State mutability already specified as \"view\".");
+	text = R"(
+		contract c {
+			function f() payable constant {}
+		})";
+	CHECK_PARSE_ERROR(text, "State mutability already specified as \"payable\".");
+	text = R"(
+		contract c {
+			function f() pure payable {}
+		})";
+	CHECK_PARSE_ERROR(text, "State mutability already specified as \"pure\".");
+	text = R"(
+		contract c {
+			function f() pure constant {}
+		})";
+	CHECK_PARSE_ERROR(text, "State mutability already specified as \"pure\".");
 }
 
 BOOST_AUTO_TEST_CASE(literal_constants_with_ether_subdenominations)
@@ -1152,6 +1287,18 @@ BOOST_AUTO_TEST_CASE(tuples)
 	BOOST_CHECK(successParse(text));
 }
 
+BOOST_AUTO_TEST_CASE(tuples_without_commas)
+{
+	char const* text = R"(
+		contract C {
+			function f() {
+				var a = (2 2);
+			}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Expected token Comma");
+}
+
 BOOST_AUTO_TEST_CASE(member_access_parser_ambiguity)
 {
 	char const* text = R"(
@@ -1313,6 +1460,42 @@ BOOST_AUTO_TEST_CASE(conditional_with_assignment)
 		}
 	)";
 	BOOST_CHECK(successParse(text));
+}
+
+BOOST_AUTO_TEST_CASE(recursion_depth1)
+{
+	string text("contract C { bytes");
+	for (size_t i = 0; i < 30000; i++)
+		text += "[";
+	CHECK_PARSE_ERROR(text.c_str(), "Maximum recursion depth reached during parsing");
+}
+
+BOOST_AUTO_TEST_CASE(recursion_depth2)
+{
+	string text("contract C { function f() {");
+	for (size_t i = 0; i < 30000; i++)
+		text += "{";
+	CHECK_PARSE_ERROR(text, "Maximum recursion depth reached during parsing");
+}
+
+BOOST_AUTO_TEST_CASE(recursion_depth3)
+{
+	string text("contract C { function f() { uint x = f(");
+	for (size_t i = 0; i < 30000; i++)
+		text += "(";
+	CHECK_PARSE_ERROR(text, "Maximum recursion depth reached during parsing");
+}
+
+BOOST_AUTO_TEST_CASE(recursion_depth4)
+{
+	string text("contract C { function f() { uint a;");
+	for (size_t i = 0; i < 30000; i++)
+		text += "(";
+	text += "a";
+	for (size_t i = 0; i < 30000; i++)
+		text += "++)";
+	text += "}}";
+	CHECK_PARSE_ERROR(text, "Maximum recursion depth reached during parsing");
 }
 
 BOOST_AUTO_TEST_CASE(declaring_fixed_and_ufixed_variables)
@@ -1477,6 +1660,42 @@ BOOST_AUTO_TEST_CASE(function_type_state_variable)
 		}
 	)";
 	BOOST_CHECK(successParse(text));
+}
+
+BOOST_AUTO_TEST_CASE(scientific_notation)
+{
+	char const* text = R"(
+		contract test {
+			uint256 a = 2e10;
+			uint256 b = 2E10;
+			uint256 c = 200e-2;
+			uint256 d = 2E10 wei;
+			uint256 e = 2.5e10;
+		}
+	)";
+	BOOST_CHECK(successParse(text));
+}
+
+BOOST_AUTO_TEST_CASE(interface)
+{
+	char const* text = R"(
+		interface Interface {
+			function f();
+		}
+	)";
+	BOOST_CHECK(successParse(text));
+}
+
+BOOST_AUTO_TEST_CASE(newInvalidTypeName)
+{
+	char const* text = R"(
+		contract C {
+			function f() {
+				new var;
+			}
+		}
+	)";
+	CHECK_PARSE_ERROR(text, "Expected explicit type name");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -21,33 +21,30 @@
  */
 
 #include <libsolidity/interface/Exceptions.h>
-#include <libsolidity/interface/Utils.h>
 
 using namespace std;
 using namespace dev;
 using namespace dev::solidity;
 
-Error::Error(Type _type): m_type(_type)
+Error::Error(Type _type, SourceLocation const& _location, string const& _description):
+	m_type(_type)
 {
 	switch(m_type)
 	{
 	case Type::DeclarationError:
-		m_typeName = "Declaration Error";
+		m_typeName = "DeclarationError";
 		break;
 	case Type::DocstringParsingError:
-		m_typeName = "Docstring Parsing Error";
+		m_typeName = "DocstringParsingError";
 		break;
 	case Type::ParserError:
-		m_typeName = "Parser Error";
+		m_typeName = "ParserError";
 		break;
 	case Type::SyntaxError:
-		m_typeName = "Syntax Error";
+		m_typeName = "SyntaxError";
 		break;
 	case Type::TypeError:
-		m_typeName = "Type Error";
-		break;
-	case Type::Why3TranslatorError:
-		m_typeName = "Why3 Translator Error";
+		m_typeName = "TypeError";
 		break;
 	case Type::Warning:
 		m_typeName = "Warning";
@@ -56,17 +53,17 @@ Error::Error(Type _type): m_type(_type)
 		solAssert(false, "");
 		break;
 	}
+
+	if (!_location.isEmpty())
+		*this << errinfo_sourceLocation(_location);
+	if (!_description.empty())
+		*this << errinfo_comment(_description);
 }
 
-string Exception::lineInfo() const
+Error::Error(Error::Type _type, const std::string& _description, const SourceLocation& _location):
+	Error(_type)
 {
-	char const* const* file = boost::get_error_info<boost::throw_file>(*this);
-	int const* line = boost::get_error_info<boost::throw_line>(*this);
-	string ret;
-	if (file)
-		ret += *file;
-	ret += ':';
-	if (line)
-		ret += boost::lexical_cast<string>(*line);
-	return ret;
+	if (!_location.isEmpty())
+		*this << errinfo_sourceLocation(_location);
+	*this << errinfo_comment(_description);
 }

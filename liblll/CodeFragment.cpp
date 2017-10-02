@@ -171,11 +171,23 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 			return string();
 		};
 
-		auto varAddress = [&](string const& n)
+		auto varAddress = [&](string const& n, bool createMissing = false)
 		{
+			if (n.empty())
+				error<InvalidName>("Empty variable name not allowed");
 			auto it = _s.vars.find(n);
 			if (it == _s.vars.end())
-				error<InvalidName>(std::string("Symbol not found: ") + s);
+			{
+				if (createMissing)
+				{
+					// Create new variable
+					bool ok;
+					tie(it, ok) = _s.vars.insert(make_pair(n, make_pair(_s.stackSize, 32)));
+					_s.stackSize += 32;
+				}
+				else
+					error<InvalidName>(std::string("Symbol not found: ") + n);
+			}
 			return it->second.first;
 		};
 
@@ -191,24 +203,30 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 		else if (us == "INCLUDE")
 		{
 			if (_t.size() != 2)
-				error<IncorrectParameterCount>();
-			m_asm.append(CodeFragment::compile(contentsString(firstAsString()), _s).m_asm);
+				error<IncorrectParameterCount>(us);
+			string fileName = firstAsString();
+			if (fileName.empty())
+				error<InvalidName>("Empty file name provided");
+			string contents = contentsString(fileName);
+			if (contents.empty())
+				error<InvalidName>(std::string("File not found (or empty): ") + fileName);
+			m_asm.append(CodeFragment::compile(contents, _s).m_asm);
 		}
 		else if (us == "SET")
 		{
 			if (_t.size() != 3)
-				error<IncorrectParameterCount>();
+				error<IncorrectParameterCount>(us);
 			int c = 0;
 			for (auto const& i: _t)
 				if (c++ == 2)
 					m_asm.append(CodeFragment(i, _s, false).m_asm);
-			m_asm.append((u256)varAddress(firstAsString()));
+			m_asm.append((u256)varAddress(firstAsString(), true));
 			m_asm.append(Instruction::MSTORE);
 		}
 		else if (us == "GET")
 		{
 			if (_t.size() != 2)
-				error<IncorrectParameterCount>();
+				error<IncorrectParameterCount>(us);
 			m_asm.append((u256)varAddress(firstAsString()));
 			m_asm.append(Instruction::MLOAD);
 		}
@@ -219,7 +237,7 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 			string n;
 			unsigned ii = 0;
 			if (_t.size() != 3 && _t.size() != 4)
-				error<IncorrectParameterCount>();
+				error<IncorrectParameterCount>(us);
 			vector<string> args;
 			for (auto const& i: _t)
 			{
@@ -240,7 +258,11 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 				}
 				else if (ii == 2)
 					if (_t.size() == 3)
-						_s.defs[n] = CodeFragment(i, _s);
+					{
+						/// NOTE: some compilers could do the assignment first if this is done in a single line
+						CodeFragment code = CodeFragment(i, _s);
+						_s.defs[n] = code;
+					}
 					else
 						for (auto const& j: i)
 						{
@@ -266,7 +288,7 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 		else if (us == "LIT")
 		{
 			if (_t.size() < 3)
-				error<IncorrectParameterCount>();
+				error<IncorrectParameterCount>(us);
 			unsigned ii = 0;
 			CodeFragment pos;
 			bytes data;
@@ -281,7 +303,7 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 				{
 					pos = CodeFragment(i, _s);
 					if (pos.m_asm.deposit() != 1)
-						error<InvalidDeposit>();
+						error<InvalidDeposit>(us);
 				}
 				else if (i.tag() != 0)
 				{
@@ -362,10 +384,10 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 				else
 					code.push_back(CodeFragment(i, _s));
 			}
-		auto requireSize = [&](unsigned s) { if (code.size() != s) error<IncorrectParameterCount>(); };
-		auto requireMinSize = [&](unsigned s) { if (code.size() < s) error<IncorrectParameterCount>(); };
-		auto requireMaxSize = [&](unsigned s) { if (code.size() > s) error<IncorrectParameterCount>(); };
-		auto requireDeposit = [&](unsigned i, int s) { if (code[i].m_asm.deposit() != s) error<InvalidDeposit>(); };
+		auto requireSize = [&](unsigned s) { if (code.size() != s) error<IncorrectParameterCount>(us); };
+		auto requireMinSize = [&](unsigned s) { if (code.size() < s) error<IncorrectParameterCount>(us); };
+		auto requireMaxSize = [&](unsigned s) { if (code.size() > s) error<IncorrectParameterCount>(us); };
+		auto requireDeposit = [&](unsigned i, int s) { if (code[i].m_asm.deposit() != s) error<InvalidDeposit>(us); };
 
 		if (_s.macros.count(make_pair(s, code.size())))
 		{
@@ -390,11 +412,7 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 		else if (c_instructions.count(us))
 		{
 			auto it = c_instructions.find(us);
-			int ea = instructionInfo(it->second).args;
-			if (ea >= 0)
-				requireSize(ea);
-			else
-				requireMinSize(-ea);
+			requireSize(instructionInfo(it->second).args);
 
 			for (unsigned i = code.size(); i; --i)
 				m_asm.append(code[i - 1].m_asm, 1);
@@ -439,15 +457,21 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 			int minDep = min(code[1].m_asm.deposit(), code[2].m_asm.deposit());
 
 			m_asm.append(code[0].m_asm);
-			auto pos = m_asm.appendJumpI();
-			m_asm.onePath();
+			auto mainBranch = m_asm.appendJumpI();
+
+			/// The else branch.
+			int startDeposit = m_asm.deposit();
 			m_asm.append(code[2].m_asm, minDep);
 			auto end = m_asm.appendJump();
-			m_asm.otherPath();
-			m_asm << pos.tag();
+			int deposit = m_asm.deposit();
+			m_asm.setDeposit(startDeposit);
+
+			/// The main branch.
+			m_asm << mainBranch.tag();
 			m_asm.append(code[1].m_asm, minDep);
 			m_asm << end.tag();
-			m_asm.donePaths();
+			if (m_asm.deposit() != deposit)
+				error<InvalidDeposit>(us);
 		}
 		else if (us == "WHEN" || us == "UNLESS")
 		{
@@ -458,11 +482,8 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 			if (us == "WHEN")
 				m_asm.append(Instruction::ISZERO);
 			auto end = m_asm.appendJumpI();
-			m_asm.onePath();
-			m_asm.otherPath();
 			m_asm.append(code[1].m_asm, 0);
 			m_asm << end.tag();
-			m_asm.donePaths();
 		}
 		else if (us == "WHILE" || us == "UNTIL")
 		{
@@ -498,14 +519,30 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 			requireSize(1);
 			requireDeposit(0, 1);
 
-			m_asm.append(Instruction::MSIZE);
-			m_asm.append(u256(0));
+			// (alloc N):
+			//  - Evaluates to (msize) before the allocation - the start of the allocated memory
+			//  - Does not allocate memory when N is zero
+			//  - Size of memory allocated is N bytes rounded up to a multiple of 32
+			//  - Uses MLOAD to expand MSIZE to avoid modifying memory.
+
+			auto end = m_asm.newTag();
+			m_asm.append(Instruction::MSIZE); // Result will be original top of memory
+			m_asm.append(code[0].m_asm, 1);	  // The alloc argument N
+			m_asm.append(Instruction::DUP1);
+			m_asm.append(Instruction::ISZERO);// (alloc 0) does not change MSIZE
+			m_asm.appendJumpI(end);
 			m_asm.append(u256(1));
-			m_asm.append(code[0].m_asm, 1);
-			m_asm.append(Instruction::MSIZE);
+			m_asm.append(Instruction::DUP2);  // Copy N
+			m_asm.append(Instruction::SUB);	  // N-1
+			m_asm.append(u256(0x1f));         // Bit mask
+			m_asm.append(Instruction::NOT);	  // Invert
+			m_asm.append(Instruction::AND);	  // Align N-1 on 32 byte boundary
+			m_asm.append(Instruction::MSIZE); // MSIZE is cheap
 			m_asm.append(Instruction::ADD);
-			m_asm.append(Instruction::SUB);
-			m_asm.append(Instruction::MSTORE8);
+			m_asm.append(Instruction::MLOAD); // Updates MSIZE
+			m_asm.append(Instruction::POP);	  // Discard the result of the MLOAD
+			m_asm.append(end);
+			m_asm.append(Instruction::POP);	  // Discard duplicate N
 
 			_s.usedAlloc = true;
 		}
@@ -515,8 +552,7 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 			requireMaxSize(3);
 			requireDeposit(1, 1);
 
-			auto subPush = m_asm.newSub(make_shared<Assembly>(code[0].assembly(ns)));
-			m_asm.append(m_asm.newPushSubSize(subPush.data()));
+			auto subPush = m_asm.appendSubroutine(make_shared<Assembly>(code[0].assembly(ns)));
 			m_asm.append(Instruction::DUP1);
 			if (code.size() == 3)
 			{
@@ -571,11 +607,9 @@ void CodeFragment::constructOperation(sp::utree const& _t, CompilerState& _s)
 		{
 			for (auto const& i: code)
 				m_asm.append(i.m_asm);
-			m_asm.popTo(1);
-		}
-		else if (us == "PANIC")
-		{
-			m_asm.appendJump(m_asm.errorTag());
+			// Leave only the last item on stack.
+			while (m_asm.deposit() > 1)
+				m_asm.append(Instruction::POP);
 		}
 		else if (us == "BYTECODESIZE")
 		{

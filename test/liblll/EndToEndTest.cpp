@@ -57,6 +57,164 @@ BOOST_AUTO_TEST_CASE(panic)
 	BOOST_REQUIRE(m_output.empty());
 }
 
+BOOST_AUTO_TEST_CASE(macro_zeroarg)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(def 'zeroarg () (seq (mstore 0 0x1234) (return 0 32)))
+				(zeroarg)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(0x1234)));
+}
+
+BOOST_AUTO_TEST_CASE(macros)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(def 'x 1)
+				(def 'y () { (def 'x (+ x 2)) })
+				(y)
+				(return x)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(3)));
+}
+
+BOOST_AUTO_TEST_CASE(variables)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(set 'x 1)
+				(set 'y 2)
+				;; this should equal to 3
+				(set 'z (add (get 'x) (get 'y)))
+				;; overwriting it here
+				(set 'y 4)
+				;; each variable has a 32 byte slot, starting from memory location 0x80
+				;; variable addresses can also be retrieved by x or (ref 'x)
+				(set 'k (add (add (ref 'x) (ref 'y)) z))
+				(return (add (add (get 'x) (add (get 'y) (get 'z))) (get 'k)))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(488)));
+}
+
+BOOST_AUTO_TEST_CASE(when)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(when (= (calldatasize) 0) (return 1))
+				(when (!= (calldatasize) 0) (return 2))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()") == encodeArgs(u256(2)));
+	BOOST_CHECK(callFallback() == toBigEndian(u256(1)));
+}
+
+BOOST_AUTO_TEST_CASE(unless)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(unless (!= (calldatasize) 0) (return 1))
+				(unless (= (calldatasize) 0) (return 2))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()") == encodeArgs(u256(2)));
+	BOOST_CHECK(callFallback() == toBigEndian(u256(1)));
+}
+
+BOOST_AUTO_TEST_CASE(conditional_literal)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(return (if (= (calldatasize) 0) 1 2))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()") == encodeArgs(u256(2)));
+	BOOST_CHECK(callFallback() == toBigEndian(u256(1)));
+}
+
+BOOST_AUTO_TEST_CASE(conditional)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(if (= (calldatasize) 0) (return 1) (return 2))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()") == encodeArgs(u256(2)));
+	BOOST_CHECK(callFallback() == toBigEndian(u256(1)));
+}
+
+BOOST_AUTO_TEST_CASE(conditional_seq)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(return (if (= (calldatasize) 0) { 0 2 1 } { 0 1 2 }))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()") == encodeArgs(u256(2)));
+	BOOST_CHECK(callFallback() == toBigEndian(u256(1)));
+}
+
+BOOST_AUTO_TEST_CASE(conditional_nested_else)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(def 'input (calldataload 0x04))
+				;; Calculates width in bytes of utf-8 characters.
+				(return
+					(if (< input 0x80) 1
+						(if (< input 0xE0) 2
+							(if (< input 0xF0) 3
+								(if (< input 0xF8) 4
+									(if (< input 0xFC) 5
+										6))))))))
+
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()", 0x00) == encodeArgs(u256(1)));
+	BOOST_CHECK(callContractFunction("test()", 0x80) == encodeArgs(u256(2)));
+	BOOST_CHECK(callContractFunction("test()", 0xe0) == encodeArgs(u256(3)));
+	BOOST_CHECK(callContractFunction("test()", 0xf0) == encodeArgs(u256(4)));
+	BOOST_CHECK(callContractFunction("test()", 0xf8) == encodeArgs(u256(5)));
+	BOOST_CHECK(callContractFunction("test()", 0xfc) == encodeArgs(u256(6)));
+}
+
+BOOST_AUTO_TEST_CASE(conditional_nested_then)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(def 'input (calldataload 0x04))
+				;; Calculates width in bytes of utf-8 characters.
+				(return
+					(if (>= input 0x80)
+						(if (>= input 0xE0)
+							(if (>= input 0xF0)
+								(if (>= input 0xF8)
+									(if (>= input 0xFC)
+										6 5) 4) 3) 2) 1))))
+
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()", 0x00) == encodeArgs(u256(1)));
+	BOOST_CHECK(callContractFunction("test()", 0x80) == encodeArgs(u256(2)));
+	BOOST_CHECK(callContractFunction("test()", 0xe0) == encodeArgs(u256(3)));
+	BOOST_CHECK(callContractFunction("test()", 0xf0) == encodeArgs(u256(4)));
+	BOOST_CHECK(callContractFunction("test()", 0xf8) == encodeArgs(u256(5)));
+	BOOST_CHECK(callContractFunction("test()", 0xfc) == encodeArgs(u256(6)));
+}
+
 BOOST_AUTO_TEST_CASE(exp_operator_const)
 {
 	char const* sourceCode = R"(
@@ -272,11 +430,413 @@ BOOST_AUTO_TEST_CASE(assembly_codecopy)
 			(seq
 				(lit 0x00 "abcdef")
 				(asm
-					0x06 0x16 0x20 codecopy
+					0x06 6 codesize sub 0x20 codecopy
 					0x20 0x20 return)))
 	)";
 	compileAndRun(sourceCode);
 	BOOST_CHECK(callFallback() == encodeArgs(string("abcdef")));
+}
+
+BOOST_AUTO_TEST_CASE(for_loop)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(for
+					{ (set 'i 1) (set 'j 1) } ; INIT
+					(<= @i 10)                ; PRED
+					[i]:(+ @i 1)              ; POST
+					[j]:(* @j @i))            ; BODY
+				(return j 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(3628800))); // 10!
+}
+
+BOOST_AUTO_TEST_CASE(while_loop)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				;; Euclid's GCD algorithm
+				(set 'a 1071)
+				(set 'b 462)
+				(while @b
+					[a]:(raw @b [b]:(mod @a @b)))
+				(return a 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(21))); // GCD(1071,462)
+}
+
+BOOST_AUTO_TEST_CASE(keccak256_32bytes)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(mstore 0x00 0x01)
+				(return (keccak256 0x00 0x20))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6")));
+}
+
+// The following tests are for the built-in macros.
+// Note that panic, returnlll and return_one_arg are well covered above.
+
+BOOST_AUTO_TEST_CASE(allgas)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return (- (gas) allgas)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(16))); // == 21 - SUB - GAS
+}
+
+BOOST_AUTO_TEST_CASE(send_two_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(send 0xdead 42))
+	)";
+	compileAndRun(sourceCode);
+	callFallbackWithValue(42);
+	BOOST_CHECK(balanceAt(Address(0xdead)) == 42);
+}
+
+BOOST_AUTO_TEST_CASE(send_three_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(send allgas 0xdead 42))
+	)";
+	compileAndRun(sourceCode);
+	callFallbackWithValue(42);
+	BOOST_CHECK(balanceAt(Address(0xdead)) == 42);
+}
+
+// Regression test for edge case that previously failed
+BOOST_AUTO_TEST_CASE(alloc_zero)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(mstore 0x00 (~ 0))
+				(alloc 0)
+				(return 0x00 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(-1)));
+}
+
+BOOST_AUTO_TEST_CASE(alloc_size)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(mstore 0x00 0) ; reserve space for the result of the alloc
+				(mstore 0x00 (alloc (calldataload 0x04)))
+				(return (- (msize) (mload 0x00)))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callContractFunction("test()", 0)  == encodeArgs(u256(0)));
+	BOOST_CHECK(callContractFunction("test()", 1)  == encodeArgs(u256(32)));
+	BOOST_CHECK(callContractFunction("test()", 32) == encodeArgs(u256(32)));
+	BOOST_CHECK(callContractFunction("test()", 33) == encodeArgs(u256(64)));
+}
+
+BOOST_AUTO_TEST_CASE(alloc_start)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(mstore 0x40 0)     ; Set initial MSIZE to 0x60
+				(return (alloc 1))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(96));
+}
+
+BOOST_AUTO_TEST_CASE(alloc_with_variable)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(set 'x (alloc 1))
+				(mstore8 @x 42)    ; ASCII '*'
+				(return @x 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs("*"));
+}
+
+BOOST_AUTO_TEST_CASE(msg_six_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(when (= 0 (calldatasize))
+					(seq
+						(mstore 0x40 1)
+						(def 'outsize 0x20)
+						(return (msg 1000 (address) 42 0x40 0x20 outsize) outsize)))
+				(when (= 1 (calldataload 0x00))
+					(return (callvalue)))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallbackWithValue(42) == encodeArgs(u256(42)));
+}
+
+BOOST_AUTO_TEST_CASE(msg_five_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(when (= 0 (calldatasize))
+					(seq
+						(mstore 0x20 1)
+						(mstore 0x40 2)
+						(return (msg 1000 (address) 42 0x20 0x40))))
+				(when (= 3 (+ (calldataload 0x00) (calldataload 0x20)))
+					(return (callvalue)))))
+
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallbackWithValue(42) == encodeArgs(u256(42)));
+}
+
+BOOST_AUTO_TEST_CASE(msg_four_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(when (= 0 (calldatasize))
+					(return (msg 1000 (address) 42 0xff)))
+				(return (callvalue))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallbackWithValue(42) == encodeArgs(u256(42)));
+}
+
+BOOST_AUTO_TEST_CASE(msg_three_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(when (= 0 (calldatasize))
+					(return (msg (address) 42 0xff)))
+				(return (callvalue))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallbackWithValue(42) == encodeArgs(u256(42)));
+}
+
+BOOST_AUTO_TEST_CASE(msg_two_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(when (= 0 (calldatasize))
+					(return (msg (address) 0xff)))
+				(return 42)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(42)));
+}
+
+BOOST_AUTO_TEST_CASE(create_one_arg)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(call allgas
+					(create (returnlll (return 42)))
+					0 0 0 0x00 0x20)
+				(return 0x00 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(42)));
+}
+
+BOOST_AUTO_TEST_CASE(create_two_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(call allgas
+					(create 42 (returnlll (return (balance (address)))))
+					0 0 0 0x00 0x20)
+				(return 0x00 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallbackWithValue(42) == encodeArgs(u256(42)));
+}
+
+BOOST_AUTO_TEST_CASE(sha3_two_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(mstore 0x00 0x01)
+				(return (sha3 0x00 0x20))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6")));
+}
+
+BOOST_AUTO_TEST_CASE(sha3_one_arg)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return (sha3 0x01)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6")));
+}
+
+BOOST_AUTO_TEST_CASE(sha3pair)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return (sha3pair 0x01 0x02)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("0xe90b7bceb6e7df5418fb78d8ee546e97c83a08bbccc01a0644d599ccd2a7c2e0")));
+}
+
+BOOST_AUTO_TEST_CASE(sha3trip)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return (sha3trip 0x01 0x02 0x03)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("0x6e0c627900b24bd432fe7b1f713f1b0744091a646a9fe4a65a18dfed21f2949c")));
+}
+
+BOOST_AUTO_TEST_CASE(makeperm) // Covers makeperm (implicit), permcount and perm
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(perm 'x) (x (+ 1 x))
+				(perm 'y) (y (+ 10 y))
+				(when (= 2 permcount)
+					(return (+ x y)))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(11)));
+}
+
+BOOST_AUTO_TEST_CASE(ecrecover)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return
+				(ecrecover
+					; Hash of 'hello world'
+					0x47173285a8d7341e5e972fc677286384f802f8ef42a5ec5f03bbfa254cb01fad
+					; v = 1 + 27
+					0x1c
+					; r
+					0xdebaaa0cddb321b2dcaaf846d39605de7b97e77ba6106587855b9106cb104215
+					; s
+					0x61a22d94fa8b8a687ff9c911c844d1c016d1a685a9166858f9c7c1bc85128aca)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(fromHex("0x8743523d96a1b2cbe0c6909653a56da18ed484af")));
+}
+
+BOOST_AUTO_TEST_CASE(sha256_two_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(lit 0x20 "abcdefghijklmnopqrstuvwxyzABCDEF")
+				(lit 0x40 "GHIJKLMNOPQRSTUVWXYZ0123456789?!")
+				(sha256 0x20 0x40)
+				(return 0x00 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("0xcf25a9fe3d86ae228c226c81d2d8c64c687cd6dc4586d10d8e7e4e5b6706d429")));
+}
+
+BOOST_AUTO_TEST_CASE(ripemd160_two_args)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(lit 0x20 "abcdefghijklmnopqrstuvwxyzABCDEF")
+				(lit 0x40 "GHIJKLMNOPQRSTUVWXYZ0123456789?!")
+				(ripemd160 0x20 0x40)
+				(return 0x00 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("0x36c6b90a49e17d4c1e1b0e634ec74124d9b207da")));
+}
+
+BOOST_AUTO_TEST_CASE(sha256_one_arg)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(sha256 0x6162636465666768696a6b6c6d6e6f707172737475767778797a414243444546)
+				(return 0x00 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("0xcfd2f1fad75a1978da0a444883db7251414b139f31f5a04704c291fdb0e175e6")));
+}
+
+BOOST_AUTO_TEST_CASE(ripemd160_one_arg)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(seq
+				(ripemd160 0x6162636465666768696a6b6c6d6e6f707172737475767778797a414243444546)
+				(return 0x00 0x20)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(
+		fromHex("0xac5ab22e07b0fb80c69b6207902f725e2507e546")));
+}
+
+BOOST_AUTO_TEST_CASE(wei_szabo_finney_ether)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return (+ wei (+ szabo (+ finney ether)))))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(1001001000000000001)));
+}
+
+BOOST_AUTO_TEST_CASE(shift_left)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return (shl 1 8)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(256)));
+}
+
+BOOST_AUTO_TEST_CASE(shift_right)
+{
+	char const* sourceCode = R"(
+		(returnlll
+			(return (shr 65536 8)))
+	)";
+	compileAndRun(sourceCode);
+	BOOST_CHECK(callFallback() == encodeArgs(u256(256)));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

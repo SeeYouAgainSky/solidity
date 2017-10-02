@@ -40,7 +40,7 @@ specified default locale if it is valid, and if not then it will modify the
 environment the process is running in to use a sensible default. This also means
 that users do not need to install language packs for their OS.
 */
-void setDefaultOrCLocale()
+static void setDefaultOrCLocale()
 {
 #if __unix__
 	if (!std::setlocale(LC_ALL, ""))
@@ -58,15 +58,16 @@ int main(int argc, char** argv)
 		return 1;
 	if (!cli.processInput())
 		return 1;
+	bool success = false;
 	try
 	{
-		cli.actOnInput();
+		success = cli.actOnInput();
 	}
 	catch (boost::exception const& _exception)
 	{
 		cerr << "Exception during output generation: " << boost::diagnostic_information(_exception) << endl;
-		return 1;
+		success = false;
 	}
 
-	return 0;
+	return success ? 0 : 1;
 }

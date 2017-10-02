@@ -22,7 +22,6 @@
 
 #pragma once
 
-#include <libsolidity/analysis/TypeChecker.h>
 #include <libsolidity/ast/Types.h>
 #include <libsolidity/ast/ASTAnnotations.h>
 #include <libsolidity/ast/ASTForward.h>
@@ -33,6 +32,7 @@ namespace dev
 namespace solidity
 {
 
+class ErrorReporter;
 
 /**
  * The module that performs type analysis on the AST, checks the applicability of operations on
@@ -43,7 +43,7 @@ class TypeChecker: private ASTConstVisitor
 {
 public:
 	/// @param _errors the reference to the list of errors and warnings to add them found during type checking.
-	TypeChecker(ErrorList& _errors): m_errors(_errors) {}
+	TypeChecker(ErrorReporter& _errorReporter): m_errorReporter(_errorReporter) {}
 
 	/// Performs type checking on the given contract and all of its sub-nodes.
 	/// @returns true iff all checks passed. Note even if all checks passed, errors() can still contain warnings
@@ -56,20 +56,16 @@ public:
 	TypePointer const& type(VariableDeclaration const& _variable) const;
 
 private:
-	/// Adds a new error to the list of errors.
-	void typeError(SourceLocation const& _location, std::string const& _description);
-
-	/// Adds a new warning to the list of errors.
-	void warning(SourceLocation const& _location, std::string const& _description);
-
-	/// Adds a new error to the list of errors and throws to abort type checking.
-	void fatalTypeError(SourceLocation const& _location, std::string const& _description);
 
 	virtual bool visit(ContractDefinition const& _contract) override;
 	/// Checks that two functions defined in this contract with the same name have different
 	/// arguments and that there is at most one constructor.
 	void checkContractDuplicateFunctions(ContractDefinition const& _contract);
 	void checkContractIllegalOverrides(ContractDefinition const& _contract);
+	/// Reports a type error with an appropiate message if overriden function signature differs.
+	/// Also stores the direct super function in the AST annotations.
+	void checkFunctionOverride(FunctionDefinition const& function, FunctionDefinition const& super);
+	void overrideError(FunctionDefinition const& function, FunctionDefinition const& super, std::string message);
 	void checkContractAbstractFunctions(ContractDefinition const& _contract);
 	void checkContractAbstractConstructors(ContractDefinition const& _contract);
 	/// Checks that different functions with external visibility end up having different
@@ -77,12 +73,16 @@ private:
 	void checkContractExternalTypeClashes(ContractDefinition const& _contract);
 	/// Checks that all requirements for a library are fulfilled if this is a library.
 	void checkLibraryRequirements(ContractDefinition const& _contract);
+	/// Checks (and warns) if a tuple assignment might cause unexpected overwrites in storage.
+	/// Should only be called if the left hand side is tuple-typed.
+	void checkDoubleStorageAssignment(Assignment const& _assignment);
 
 	virtual void endVisit(InheritanceSpecifier const& _inheritance) override;
 	virtual void endVisit(UsingForDirective const& _usingFor) override;
 	virtual bool visit(StructDefinition const& _struct) override;
 	virtual bool visit(FunctionDefinition const& _function) override;
 	virtual bool visit(VariableDeclaration const& _variable) override;
+	virtual bool visit(EnumDefinition const& _enum) override;
 	/// We need to do this manually because we want to pass the bases of the current contract in
 	/// case this is a base constructor call.
 	void visitManually(ModifierInvocation const& _modifier, std::vector<ContractDefinition const*> const& _bases);
@@ -126,7 +126,7 @@ private:
 
 	ContractDefinition const* m_scope = nullptr;
 
-	ErrorList& m_errors;
+	ErrorReporter& m_errorReporter;
 };
 
 }

@@ -24,6 +24,7 @@
 #include <libevmasm/CommonSubexpressionEliminator.h>
 #include <libevmasm/ControlFlowGraph.h>
 #include <libevmasm/PeepholeOptimiser.h>
+#include <libevmasm/JumpdestRemover.h>
 #include <libevmasm/BlockDeduplicator.h>
 #include <libevmasm/ConstantOptimiser.h>
 #include <libevmasm/GasMeter.h>
@@ -40,7 +41,7 @@ void Assembly::append(Assembly const& _a)
 	auto newDeposit = m_deposit + _a.deposit();
 	for (AssemblyItem i: _a.m_items)
 	{
-		if (i.type() == Tag || (i.type() == PushTag && i != errorTag()))
+		if (i.type() == Tag || i.type() == PushTag)
 			i.setData(i.data() + m_usedTags);
 		else if (i.type() == PushSub || i.type() == PushSubSize)
 			i.setData(i.data() + m_subs.size());
@@ -48,6 +49,8 @@ void Assembly::append(Assembly const& _a)
 	}
 	m_deposit = newDeposit;
 	m_usedTags += _a.m_usedTags;
+	// This does not transfer the names of named tags on purpose. The tags themselves are
+	// transferred, but their names are only available inside the assembly.
 	for (auto const& i: _a.m_data)
 		m_data.insert(i);
 	for (auto const& i: _a.m_strings)
@@ -55,28 +58,15 @@ void Assembly::append(Assembly const& _a)
 	m_subs += _a.m_subs;
 	for (auto const& lib: _a.m_libraries)
 		m_libraries.insert(lib);
-
-	assert(!_a.m_baseDeposit);
-	assert(!_a.m_totalDeposit);
 }
 
 void Assembly::append(Assembly const& _a, int _deposit)
 {
-	if (_deposit > _a.m_deposit)
-		BOOST_THROW_EXCEPTION(InvalidDeposit());
-	else
-	{
-		append(_a);
-		while (_deposit++ < _a.m_deposit)
-			append(Instruction::POP);
-	}
-}
+	assertThrow(_deposit <= _a.m_deposit, InvalidDeposit, "");
 
-string Assembly::out() const
-{
-	stringstream ret;
-	stream(ret);
-	return ret.str();
+	append(_a);
+	while (_deposit++ < _a.m_deposit)
+		append(Instruction::POP);
 }
 
 unsigned Assembly::bytesRequired(unsigned subTagSize) const
@@ -193,7 +183,7 @@ private:
 
 }
 
-ostream& Assembly::streamAsm(ostream& _out, string const& _prefix, StringMap const& _sourceCodes) const
+void Assembly::assemblyStream(ostream& _out, string const& _prefix, StringMap const& _sourceCodes) const
 {
 	Functionalizer f(_out, _prefix, _sourceCodes);
 
@@ -205,20 +195,29 @@ ostream& Assembly::streamAsm(ostream& _out, string const& _prefix, StringMap con
 	{
 		_out << _prefix << "stop" << endl;
 		for (auto const& i: m_data)
-			assertThrow(u256(i.first) < m_subs.size(), AssemblyException, "Data not yet implemented.");
+			if (u256(i.first) >= m_subs.size())
+				_out << _prefix << "data_" << toHex(u256(i.first)) << " " << toHex(i.second) << endl;
 
 		for (size_t i = 0; i < m_subs.size(); ++i)
 		{
 			_out << endl << _prefix << "sub_" << i << ": assembly {\n";
-			m_subs[i]->streamAsm(_out, _prefix + "    ", _sourceCodes);
+			m_subs[i]->assemblyStream(_out, _prefix + "    ", _sourceCodes);
 			_out << _prefix << "}" << endl;
 		}
 	}
 
-	return _out;
+	if (m_auxiliaryData.size() > 0)
+		_out << endl << _prefix << "auxdata: 0x" << toHex(m_auxiliaryData) << endl;
 }
 
-Json::Value Assembly::createJsonValue(string _name, int _begin, int _end, string _value, string _jumpType) const
+string Assembly::assemblyString(StringMap const& _sourceCodes) const
+{
+	ostringstream tmp;
+	assemblyStream(tmp, "", _sourceCodes);
+	return tmp.str();
+}
+
+Json::Value Assembly::createJsonValue(string _name, int _begin, int _end, string _value, string _jumpType)
 {
 	Json::Value value;
 	value["name"] = _name;
@@ -231,18 +230,18 @@ Json::Value Assembly::createJsonValue(string _name, int _begin, int _end, string
 	return value;
 }
 
-string toStringInHex(u256 _value)
+string Assembly::toStringInHex(u256 _value)
 {
 	std::stringstream hexStr;
 	hexStr << hex << _value;
 	return hexStr.str();
 }
 
-Json::Value Assembly::streamAsmJson(ostream& _out, StringMap const& _sourceCodes) const
+Json::Value Assembly::assemblyJSON(StringMap const& _sourceCodes) const
 {
 	Json::Value root;
 
-	Json::Value collection(Json::arrayValue);
+	Json::Value& collection = root[".code"] = Json::arrayValue;
 	for (AssemblyItem const& i: m_items)
 	{
 		switch (i.type())
@@ -298,11 +297,9 @@ Json::Value Assembly::streamAsmJson(ostream& _out, StringMap const& _sourceCodes
 		}
 	}
 
-	root[".code"] = collection;
-
 	if (!m_data.empty() || !m_subs.empty())
 	{
-		Json::Value data;
+		Json::Value& data = root[".data"] = Json::objectValue;
 		for (auto const& i: m_data)
 			if (u256(i.first) >= m_subs.size())
 				data[toStringInHex((u256)i.first)] = toHex(i.second);
@@ -311,32 +308,32 @@ Json::Value Assembly::streamAsmJson(ostream& _out, StringMap const& _sourceCodes
 		{
 			std::stringstream hexStr;
 			hexStr << hex << i;
-			data[hexStr.str()] = m_subs[i]->stream(_out, "", _sourceCodes, true);
+			data[hexStr.str()] = m_subs[i]->assemblyJSON(_sourceCodes);
 		}
-		root[".data"] = data;
-		_out << root;
 	}
-	return root;
-}
 
-Json::Value Assembly::stream(ostream& _out, string const& _prefix, StringMap const& _sourceCodes, bool _inJsonFormat) const
-{
-	if (_inJsonFormat)
-		return streamAsmJson(_out, _sourceCodes);
-	else
-	{
-		streamAsm(_out, _prefix, _sourceCodes);
-		return Json::Value();
-	}
+	if (m_auxiliaryData.size() > 0)
+		root[".auxdata"] = toHex(m_auxiliaryData);
+
+	return root;
 }
 
 AssemblyItem const& Assembly::append(AssemblyItem const& _i)
 {
+	assertThrow(m_deposit >= 0, AssemblyException, "Stack underflow.");
 	m_deposit += _i.deposit();
 	m_items.push_back(_i);
 	if (m_items.back().location().isEmpty() && !m_currentSourceLocation.isEmpty())
 		m_items.back().setLocation(m_currentSourceLocation);
 	return back();
+}
+
+AssemblyItem Assembly::namedTag(string const& _name)
+{
+	assertThrow(!_name.empty(), AssemblyException, "Empty named tag.");
+	if (!m_namedTags.count(_name))
+		m_namedTags[_name] = size_t(newTag().data());
+	return AssemblyItem(Tag, m_namedTags.at(_name));
 }
 
 AssemblyItem Assembly::newPushLibraryAddress(string const& _identifier)
@@ -353,38 +350,79 @@ void Assembly::injectStart(AssemblyItem const& _i)
 
 Assembly& Assembly::optimise(bool _enable, bool _isCreation, size_t _runs)
 {
-	optimiseInternal(_enable, _isCreation, _runs);
+	OptimiserSettings settings;
+	settings.isCreation = _isCreation;
+	settings.runJumpdestRemover = true;
+	settings.runPeephole = true;
+	if (_enable)
+	{
+		settings.runDeduplicate = true;
+		settings.runCSE = true;
+		settings.runConstantOptimiser = true;
+	}
+	settings.expectedExecutionsPerDeployment = _runs;
+	optimise(settings);
 	return *this;
 }
 
-map<u256, u256> Assembly::optimiseInternal(bool _enable, bool _isCreation, size_t _runs)
+
+Assembly& Assembly::optimise(OptimiserSettings const& _settings)
 {
+	optimiseInternal(_settings, {});
+	return *this;
+}
+
+map<u256, u256> Assembly::optimiseInternal(
+	OptimiserSettings const& _settings,
+	std::set<size_t> const& _tagsReferencedFromOutside
+)
+{
+	// Run optimisation for sub-assemblies.
 	for (size_t subId = 0; subId < m_subs.size(); ++subId)
 	{
-		map<u256, u256> subTagReplacements = m_subs[subId]->optimiseInternal(_enable, false, _runs);
+		OptimiserSettings settings = _settings;
+		// Disable creation mode for sub-assemblies.
+		settings.isCreation = false;
+		map<u256, u256> subTagReplacements = m_subs[subId]->optimiseInternal(
+			settings,
+			JumpdestRemover::referencedTags(m_items, subId)
+		);
+		// Apply the replacements (can be empty).
 		BlockDeduplicator::applyTagReplacement(m_items, subTagReplacements, subId);
 	}
 
 	map<u256, u256> tagReplacements;
+	// Iterate until no new optimisation possibilities are found.
 	for (unsigned count = 1; count > 0;)
 	{
 		count = 0;
 
-		PeepholeOptimiser peepOpt(m_items);
-		while (peepOpt.optimise())
-			count++;
-
-		if (!_enable)
-			continue;
-
-		// This only modifies PushTags, we have to run again to actually remove code.
-		BlockDeduplicator dedup(m_items);
-		if (dedup.deduplicate())
+		if (_settings.runJumpdestRemover)
 		{
-			tagReplacements.insert(dedup.replacedTags().begin(), dedup.replacedTags().end());
-			count++;
+			JumpdestRemover jumpdestOpt(m_items);
+			if (jumpdestOpt.optimise(_tagsReferencedFromOutside))
+				count++;
 		}
 
+		if (_settings.runPeephole)
+		{
+			PeepholeOptimiser peepOpt(m_items);
+			while (peepOpt.optimise())
+				count++;
+		}
+
+		// This only modifies PushTags, we have to run again to actually remove code.
+		if (_settings.runDeduplicate)
+		{
+			BlockDeduplicator dedup(m_items);
+			if (dedup.deduplicate())
+			{
+				tagReplacements.insert(dedup.replacedTags().begin(), dedup.replacedTags().end());
+				count++;
+			}
+		}
+
+		if (_settings.runCSE)
 		{
 			// Control flow graph optimization has been here before but is disabled because it
 			// assumes we only jump to tags that are pushed. This is not the case anymore with
@@ -432,10 +470,10 @@ map<u256, u256> Assembly::optimiseInternal(bool _enable, bool _isCreation, size_
 		}
 	}
 
-	if (_enable)
+	if (_settings.runConstantOptimiser)
 		ConstantOptimisationMethod::optimiseConstants(
-			_isCreation,
-			_isCreation ? 1 : _runs,
+			_settings.isCreation,
+			_settings.isCreation ? 1 : _settings.expectedExecutionsPerDeployment,
 			*this,
 			m_items
 		);
@@ -452,8 +490,9 @@ LinkerObject const& Assembly::assemble() const
 	for (auto const& sub: m_subs)
 	{
 		sub->assemble();
-		if (!sub->m_tagPositionsInBytecode.empty())
-			subTagSize = max(subTagSize, *max_element(sub->m_tagPositionsInBytecode.begin(), sub->m_tagPositionsInBytecode.end()));
+		for (size_t tagPos: sub->m_tagPositionsInBytecode)
+			if (tagPos != size_t(-1) && tagPos > subTagSize)
+				subTagSize = tagPos;
 	}
 
 	LinkerObject& ret = m_assembledObject;
@@ -549,9 +588,10 @@ LinkerObject const& Assembly::assemble() const
 			ret.bytecode.resize(ret.bytecode.size() + 20);
 			break;
 		case Tag:
-			assertThrow(i.data() != 0, AssemblyException, "");
+			assertThrow(i.data() != 0, AssemblyException, "Invalid tag position.");
 			assertThrow(i.splitForeignPushTag().first == size_t(-1), AssemblyException, "Foreign tag.");
 			assertThrow(ret.bytecode.size() < 0xffffffffL, AssemblyException, "Tag too large.");
+			assertThrow(m_tagPositionsInBytecode[size_t(i.data())] == size_t(-1), AssemblyException, "Duplicate tag position.");
 			m_tagPositionsInBytecode[size_t(i.data())] = ret.bytecode.size();
 			ret.bytecode.push_back((byte)Instruction::JUMPDEST);
 			break;

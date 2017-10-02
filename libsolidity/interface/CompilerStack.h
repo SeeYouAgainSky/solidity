@@ -35,7 +35,8 @@
 #include <libdevcore/FixedHash.h>
 #include <libevmasm/SourceLocation.h>
 #include <libevmasm/LinkerObject.h>
-#include <libsolidity/interface/Exceptions.h>
+#include <libsolidity/interface/ErrorReporter.h>
+#include <libsolidity/interface/ReadFile.h>
 
 namespace dev
 {
@@ -58,16 +59,9 @@ class FunctionDefinition;
 class SourceUnit;
 class Compiler;
 class GlobalContext;
-class InterfaceHandler;
+class Natspec;
 class Error;
 class DeclarationContainer;
-
-enum class DocumentationType: uint8_t
-{
-	NatspecUser = 1,
-	NatspecDev,
-	ABIInterface
-};
 
 /**
  * Easy to use and self-contained Solidity compiler with as few header dependencies as possible.
@@ -77,132 +71,155 @@ enum class DocumentationType: uint8_t
 class CompilerStack: boost::noncopyable
 {
 public:
-	struct ReadFileResult
-	{
-		bool success;
-		std::string contentsOrErrorMesage;
+	enum State {
+		Empty,
+		SourcesSet,
+		ParsingSuccessful,
+		AnalysisSuccessful,
+		CompilationSuccessful
 	};
 
-	/// File reading callback.
-	using ReadFileCallback = std::function<ReadFileResult(std::string const&)>;
-
 	/// Creates a new compiler stack.
-	/// @param _readFile callback to used to read files for import statements. Should return
-	explicit CompilerStack(ReadFileCallback const& _readFile = ReadFileCallback());
+	/// @param _readFile callback to used to read files for import statements. Must return
+	/// and must not emit exceptions.
+	explicit CompilerStack(ReadCallback::Callback const& _readFile = ReadCallback::Callback()):
+		m_readFile(_readFile),
+		m_errorList(),
+		m_errorReporter(m_errorList) {}
+
+	/// @returns the list of errors that occured during parsing and type checking.
+	ErrorList const& errors() const { return m_errorReporter.errors(); }
+
+	/// @returns the current state.
+	State state() const { return m_stackState; }
+
+	/// Resets the compiler to a state where the sources are not parsed or even removed.
+	/// Sets the state to SourcesSet if @a _keepSources is true, otherwise to Empty.
+	/// All settings, with the exception of remappings, are reset.
+	void reset(bool _keepSources = false);
 
 	/// Sets path remappings in the format "context:prefix=target"
 	void setRemappings(std::vector<std::string> const& _remappings);
 
-	/// Resets the compiler to a state where the sources are not parsed or even removed.
-	void reset(bool _keepSources = false);
+	/// Sets library addresses. Addresses are cleared iff @a _libraries is missing.
+	/// Will not take effect before running compile.
+	void setLibraries(std::map<std::string, h160> const& _libraries = std::map<std::string, h160>{})
+	{
+		m_libraries = _libraries;
+	}
+
+	/// Changes the optimiser settings.
+	/// Will not take effect before running compile.
+	void setOptimiserSettings(bool _optimize, unsigned _runs = 200)
+	{
+		m_optimize = _optimize;
+		m_optimizeRuns = _runs;
+	}
+
+	/// @arg _metadataLiteralSources When true, store sources as literals in the contract metadata.
+	void useMetadataLiteralSources(bool _metadataLiteralSources) { m_metadataLiteralSources = _metadataLiteralSources; }
 
 	/// Adds a source object (e.g. file) to the parser. After this, parse has to be called again.
 	/// @returns true if a source object by the name already existed and was replaced.
-	void addSources(StringMap const& _nameContents, bool _isLibrary = false)
-	{
-		for (auto const& i: _nameContents) addSource(i.first, i.second, _isLibrary);
-	}
 	bool addSource(std::string const& _name, std::string const& _content, bool _isLibrary = false);
-	void setSource(std::string const& _sourceCode);
+
 	/// Parses all source units that were added
 	/// @returns false on error.
 	bool parse();
-	/// Sets the given source code as the only source unit apart from standard sources and parses it.
+
+	/// Performs the analysis steps (imports, scopesetting, syntaxCheck, referenceResolving,
+	///  typechecking, staticAnalysis) on previously parsed sources.
 	/// @returns false on error.
-	bool parse(std::string const& _sourceCode);
-	/// @returns a list of the contract names in the sources.
-	std::vector<std::string> contractNames() const;
-	std::string defaultContractName() const;
+	bool analyze();
+
+	/// Parses and analyzes all source units that were added
+	/// @returns false on error.
+	bool parseAndAnalyze();
 
 	/// Compiles the source units that were previously added and parsed.
 	/// @returns false on error.
-	bool compile(
-		bool _optimize = false,
-		unsigned _runs = 200,
-		std::map<std::string, h160> const& _libraries = std::map<std::string, h160>{}
-	);
-	/// Parses and compiles the given source code.
-	/// @returns false on error.
-	bool compile(std::string const& _sourceCode, bool _optimize = false, unsigned _runs = 200);
-
-	/// Tries to translate all source files into a language suitable for formal analysis.
-	/// @param _errors list to store errors - defaults to the internal error list.
-	/// @returns false on error.
-	bool prepareFormalAnalysis(ErrorList* _errors = nullptr);
-	std::string const& formalTranslation() const { return m_formalTranslation; }
-
-	/// @returns the assembled object for a contract.
-	eth::LinkerObject const& object(std::string const& _contractName = "") const;
-	/// @returns the runtime object for the contract.
-	eth::LinkerObject const& runtimeObject(std::string const& _contractName = "") const;
-	/// @returns the bytecode of a contract that uses an already deployed contract via DELEGATECALL.
-	/// The returned bytes will contain a sequence of 20 bytes of the format "XXX...XXX" which have to
-	/// substituted by the actual address. Note that this sequence starts end ends in three X
-	/// characters but can contain anything in between.
-	eth::LinkerObject const& cloneObject(std::string const& _contractName = "") const;
-	/// @returns normal contract assembly items
-	eth::AssemblyItems const* assemblyItems(std::string const& _contractName = "") const;
-	/// @returns runtime contract assembly items
-	eth::AssemblyItems const* runtimeAssemblyItems(std::string const& _contractName = "") const;
-	/// @returns the string that provides a mapping between bytecode and sourcecode or a nullptr
-	/// if the contract does not (yet) have bytecode.
-	std::string const* sourceMapping(std::string const& _contractName = "") const;
-	/// @returns the string that provides a mapping between runtime bytecode and sourcecode.
-	/// if the contract does not (yet) have bytecode.
-	std::string const* runtimeSourceMapping(std::string const& _contractName = "") const;
-
-	/// @returns either the contract's name or a mixture of its name and source file, sanitized for filesystem use
-	std::string const filesystemFriendlyName(std::string const& _contractName) const;
-
-	/// @returns hash of the runtime bytecode for the contract, i.e. the code that is
-	/// returned by the constructor or the zero-h256 if the contract still needs to be linked or
-	/// does not have runtime code.
-	dev::h256 contractCodeHash(std::string const& _contractName = "") const;
-
-	/// Streams a verbose version of the assembly to @a _outStream.
-	/// @arg _sourceCodes is the map of input files to source code strings
-	/// @arg _inJsonFromat shows whether the out should be in Json format
-	/// Prerequisite: Successful compilation.
-	Json::Value streamAssembly(std::ostream& _outStream, std::string const& _contractName = "", StringMap _sourceCodes = StringMap(), bool _inJsonFormat = false) const;
+	bool compile();
 
 	/// @returns the list of sources (paths) used
 	std::vector<std::string> sourceNames() const;
+
 	/// @returns a mapping assigning each source name its index inside the vector returned
 	/// by sourceNames().
 	std::map<std::string, unsigned> sourceIndices() const;
-	/// @returns a JSON representing the contract interface.
-	/// Prerequisite: Successful call to parse or compile.
-	Json::Value const& interface(std::string const& _contractName = "") const;
-	/// @returns a JSON representing the contract's documentation.
-	/// Prerequisite: Successful call to parse or compile.
-	/// @param type The type of the documentation to get.
-	/// Can be one of 4 types defined at @c DocumentationType
-	Json::Value const& metadata(std::string const& _contractName, DocumentationType _type) const;
-	std::string const& onChainMetadata(std::string const& _contractName) const;
-	void useMetadataLiteralSources(bool _metadataLiteralSources) { m_metadataLiteralSources = _metadataLiteralSources; }
 
 	/// @returns the previously used scanner, useful for counting lines during error reporting.
 	Scanner const& scanner(std::string const& _sourceName = "") const;
+
 	/// @returns the parsed source unit with the supplied name.
 	SourceUnit const& ast(std::string const& _sourceName = "") const;
-	/// @returns the parsed contract with the supplied name. Throws an exception if the contract
-	/// does not exist.
-	ContractDefinition const& contractDefinition(std::string const& _contractName) const;
-
-	/// @returns the offset of the entry point of the given function into the list of assembly items
-	/// or zero if it is not found or does not exist.
-	size_t functionEntryPoint(
-		std::string const& _contractName,
-		FunctionDefinition const& _function
-	) const;
 
 	/// Helper function for logs printing. Do only use in error cases, it's quite expensive.
 	/// line and columns are numbered starting from 1 with following order:
 	/// start line, start column, end line, end column
 	std::tuple<int, int, int, int> positionFromSourceLocation(SourceLocation const& _sourceLocation) const;
 
-	/// @returns the list of errors that occured during parsing and type checking.
-	ErrorList const& errors() const { return m_errors; }
+	/// @returns a list of the contract names in the sources.
+	std::vector<std::string> contractNames() const;
+
+	/// @returns either the contract's name or a mixture of its name and source file, sanitized for filesystem use
+	std::string const filesystemFriendlyName(std::string const& _contractName) const;
+
+	/// @returns the assembled object for a contract.
+	eth::LinkerObject const& object(std::string const& _contractName = "") const;
+
+	/// @returns the runtime object for the contract.
+	eth::LinkerObject const& runtimeObject(std::string const& _contractName = "") const;
+
+	/// @returns the bytecode of a contract that uses an already deployed contract via DELEGATECALL.
+	/// The returned bytes will contain a sequence of 20 bytes of the format "XXX...XXX" which have to
+	/// substituted by the actual address. Note that this sequence starts end ends in three X
+	/// characters but can contain anything in between.
+	eth::LinkerObject const& cloneObject(std::string const& _contractName = "") const;
+
+	/// @returns normal contract assembly items
+	eth::AssemblyItems const* assemblyItems(std::string const& _contractName = "") const;
+
+	/// @returns runtime contract assembly items
+	eth::AssemblyItems const* runtimeAssemblyItems(std::string const& _contractName = "") const;
+
+	/// @returns the string that provides a mapping between bytecode and sourcecode or a nullptr
+	/// if the contract does not (yet) have bytecode.
+	std::string const* sourceMapping(std::string const& _contractName = "") const;
+
+	/// @returns the string that provides a mapping between runtime bytecode and sourcecode.
+	/// if the contract does not (yet) have bytecode.
+	std::string const* runtimeSourceMapping(std::string const& _contractName = "") const;
+
+	/// @return a verbose text representation of the assembly.
+	/// @arg _sourceCodes is the map of input files to source code strings
+	/// Prerequisite: Successful compilation.
+	std::string assemblyString(std::string const& _contractName = "", StringMap _sourceCodes = StringMap()) const;
+
+	/// @returns a JSON representation of the assembly.
+	/// @arg _sourceCodes is the map of input files to source code strings
+	/// Prerequisite: Successful compilation.
+	Json::Value assemblyJSON(std::string const& _contractName = "", StringMap _sourceCodes = StringMap()) const;
+
+	/// @returns a JSON representing the contract ABI.
+	/// Prerequisite: Successful call to parse or compile.
+	Json::Value const& contractABI(std::string const& _contractName = "") const;
+
+	/// @returns a JSON representing the contract's user documentation.
+	/// Prerequisite: Successful call to parse or compile.
+	Json::Value const& natspecUser(std::string const& _contractName) const;
+
+	/// @returns a JSON representing the contract's developer documentation.
+	/// Prerequisite: Successful call to parse or compile.
+	Json::Value const& natspecDev(std::string const& _contractName) const;
+
+	/// @returns a JSON representing a map of method identifiers (hashes) to function names.
+	Json::Value methodIdentifiers(std::string const& _contractName) const;
+
+	/// @returns the Contract Metadata
+	std::string const& metadata(std::string const& _contractName) const;
+
+	/// @returns a JSON representing the estimated gas usage for contract creation, internal and external functions
+	Json::Value gasEstimates(std::string const& _contractName) const;
 
 private:
 	/**
@@ -223,8 +240,8 @@ private:
 		eth::LinkerObject object;
 		eth::LinkerObject runtimeObject;
 		eth::LinkerObject cloneObject;
-		std::string onChainMetadata; ///< The metadata json that will be hashed into the chain.
-		mutable std::unique_ptr<Json::Value const> interface;
+		std::string metadata; ///< The metadata json that will be hashed into the chain.
+		mutable std::unique_ptr<Json::Value const> abi;
 		mutable std::unique_ptr<Json::Value const> userDocumentation;
 		mutable std::unique_ptr<Json::Value const> devDocumentation;
 		mutable std::unique_ptr<std::string const> sourceMapping;
@@ -252,9 +269,22 @@ private:
 	Contract const& contract(std::string const& _contractName = "") const;
 	Source const& source(std::string const& _sourceName = "") const;
 
-	std::string createOnChainMetadata(Contract const& _contract) const;
+	/// @returns the parsed contract with the supplied name. Throws an exception if the contract
+	/// does not exist.
+	ContractDefinition const& contractDefinition(std::string const& _contractName) const;
+
+	std::string createMetadata(Contract const& _contract) const;
 	std::string computeSourceMapping(eth::AssemblyItems const& _items) const;
-	Json::Value const& metadata(Contract const&, DocumentationType _type) const;
+	Json::Value const& contractABI(Contract const&) const;
+	Json::Value const& natspecUser(Contract const&) const;
+	Json::Value const& natspecDev(Contract const&) const;
+
+	/// @returns the offset of the entry point of the given function into the list of assembly items
+	/// or zero if it is not found or does not exist.
+	size_t functionEntryPoint(
+		std::string const& _contractName,
+		FunctionDefinition const& _function
+	) const;
 
 	struct Remapping
 	{
@@ -263,22 +293,23 @@ private:
 		std::string target;
 	};
 
-	ReadFileCallback m_readFile;
+	ReadCallback::Callback m_readFile;
+	ReadCallback::Callback m_smtQuery;
 	bool m_optimize = false;
 	unsigned m_optimizeRuns = 200;
 	std::map<std::string, h160> m_libraries;
 	/// list of path prefix remappings, e.g. mylibrary: github.com/ethereum = /usr/local/ethereum
 	/// "context:prefix=target"
 	std::vector<Remapping> m_remappings;
-	bool m_parseSuccessful;
 	std::map<std::string const, Source> m_sources;
 	std::shared_ptr<GlobalContext> m_globalContext;
 	std::map<ASTNode const*, std::shared_ptr<DeclarationContainer>> m_scopes;
 	std::vector<Source const*> m_sourceOrder;
 	std::map<std::string const, Contract> m_contracts;
-	std::string m_formalTranslation;
-	ErrorList m_errors;
+	ErrorList m_errorList;
+	ErrorReporter m_errorReporter;
 	bool m_metadataLiteralSources = false;
+	State m_stackState = Empty;
 };
 
 }

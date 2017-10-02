@@ -99,10 +99,7 @@ bigint ConstantOptimisationMethod::dataGas(bytes const& _data) const
 
 size_t ConstantOptimisationMethod::bytesRequired(AssemblyItems const& _items)
 {
-	size_t size = 0;
-	for (AssemblyItem const& item: _items)
-		size += item.bytesRequired(3); // assume 3 byte addresses
-	return size;
+	return eth::bytesRequired(_items, 3); // assume 3 byte addresses
 }
 
 void ConstantOptimisationMethod::replaceConstants(
@@ -127,7 +124,7 @@ void ConstantOptimisationMethod::replaceConstants(
 	_items = std::move(replaced);
 }
 
-bigint LiteralMethod::gasNeeded()
+bigint LiteralMethod::gasNeeded() const
 {
 	return combineGas(
 		simpleRunGas({Instruction::PUSH1}),
@@ -142,7 +139,7 @@ CodeCopyMethod::CodeCopyMethod(Params const& _params, u256 const& _value):
 {
 }
 
-bigint CodeCopyMethod::gasNeeded()
+bigint CodeCopyMethod::gasNeeded() const
 {
 	return combineGas(
 		// Run gas: we ignore memory increase costs
@@ -154,7 +151,7 @@ bigint CodeCopyMethod::gasNeeded()
 	);
 }
 
-AssemblyItems CodeCopyMethod::execute(Assembly& _assembly)
+AssemblyItems CodeCopyMethod::execute(Assembly& _assembly) const
 {
 	bytes data = toBigEndian(m_value);
 	AssemblyItems actualCopyRoutine = copyRoutine();
@@ -162,7 +159,7 @@ AssemblyItems CodeCopyMethod::execute(Assembly& _assembly)
 	return actualCopyRoutine;
 }
 
-AssemblyItems const& CodeCopyMethod::copyRoutine() const
+AssemblyItems const& CodeCopyMethod::copyRoutine()
 {
 	AssemblyItems static copyRoutine{
 		u256(0),
@@ -194,7 +191,7 @@ AssemblyItems ComputeMethod::findRepresentation(u256 const& _value)
 		// Is not always better, try literal and decomposition method.
 		AssemblyItems routine{u256(_value)};
 		bigint bestGas = gasNeeded(routine);
-		for (unsigned bits = 255; bits > 8; --bits)
+		for (unsigned bits = 255; bits > 8 && m_maxSteps > 0; --bits)
 		{
 			unsigned gapDetector = unsigned(_value >> (bits - 8)) & 0x1ff;
 			if (gapDetector != 0xff && gapDetector != 0x100)
@@ -203,8 +200,13 @@ AssemblyItems ComputeMethod::findRepresentation(u256 const& _value)
 			u256 powerOfTwo = u256(1) << bits;
 			u256 upperPart = _value >> bits;
 			bigint lowerPart = _value & (powerOfTwo - 1);
-			if (abs(powerOfTwo - lowerPart) < lowerPart)
+			if ((powerOfTwo - lowerPart) < lowerPart)
+			{
 				lowerPart = lowerPart - powerOfTwo; // make it negative
+				upperPart++;
+			}
+			if (upperPart == 0)
+				continue;
 			if (abs(lowerPart) >= (powerOfTwo >> 8))
 				continue;
 
@@ -212,13 +214,15 @@ AssemblyItems ComputeMethod::findRepresentation(u256 const& _value)
 			if (lowerPart != 0)
 				newRoutine += findRepresentation(u256(abs(lowerPart)));
 			newRoutine += AssemblyItems{u256(bits), u256(2), Instruction::EXP};
-			if (upperPart != 1 && upperPart != 0)
+			if (upperPart != 1)
 				newRoutine += findRepresentation(upperPart) + AssemblyItems{Instruction::MUL};
 			if (lowerPart > 0)
 				newRoutine += AssemblyItems{Instruction::ADD};
 			else if (lowerPart < 0)
 				newRoutine.push_back(Instruction::SUB);
 
+			if (m_maxSteps > 0)
+				m_maxSteps--;
 			bigint newGas = gasNeeded(newRoutine);
 			if (newGas < bestGas)
 			{
@@ -230,7 +234,55 @@ AssemblyItems ComputeMethod::findRepresentation(u256 const& _value)
 	}
 }
 
-bigint ComputeMethod::gasNeeded(AssemblyItems const& _routine)
+bool ComputeMethod::checkRepresentation(u256 const& _value, AssemblyItems const& _routine)
+{
+	// This is a tiny EVM that can only evaluate some instructions.
+	vector<u256> stack;
+	for (AssemblyItem const& item: _routine)
+	{
+		switch (item.type())
+		{
+		case Operation:
+		{
+			if (stack.size() < size_t(item.arguments()))
+				return false;
+			u256* sp = &stack.back();
+			switch (item.instruction())
+			{
+			case Instruction::MUL:
+				sp[-1] = sp[0] * sp[-1];
+				break;
+			case Instruction::EXP:
+				if (sp[-1] > 0xff)
+					return false;
+				sp[-1] = boost::multiprecision::pow(sp[0], unsigned(sp[-1]));
+				break;
+			case Instruction::ADD:
+				sp[-1] = sp[0] + sp[-1];
+				break;
+			case Instruction::SUB:
+				sp[-1] = sp[0] - sp[-1];
+				break;
+			case Instruction::NOT:
+				sp[0] = ~sp[0];
+				break;
+			default:
+				return false;
+			}
+			stack.resize(stack.size() + item.deposit());
+			break;
+		}
+		case Push:
+			stack.push_back(item.data());
+			break;
+		default:
+			return false;
+		}
+	}
+	return stack.size() == 1 && stack.front() == _value;
+}
+
+bigint ComputeMethod::gasNeeded(AssemblyItems const& _routine) const
 {
 	size_t numExps = count(_routine.begin(), _routine.end(), Instruction::EXP);
 	return combineGas(

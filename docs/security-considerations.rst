@@ -14,7 +14,7 @@ the source code is often available.
 
 Of course you always have to consider how much is at stake:
 You can compare a smart contract with a web service that is open to the
-public (and thus, also to malicous actors) and perhaps even open source.
+public (and thus, also to malicious actors) and perhaps even open source.
 If you only store your grocery list on that web service, you might not have
 to take too much care, but if you manage your bank account using that web service,
 you should be more careful.
@@ -22,7 +22,11 @@ you should be more careful.
 This section will list some pitfalls and general security recommendations but
 can, of course, never be complete. Also, keep in mind that even if your
 smart contract code is bug-free, the compiler or the platform itself might
-have a bug.
+have a bug. A list of some publicly known security-relevant bugs of the compiler
+can be found in the
+:ref:`list of known bugs<known_bugs>`, which is also machine-readable. Note
+that there is a bug bounty program that covers the code generator of the
+Solidity compiler.
 
 As always, with open source documentation, please help us extend this section
 (especially, some examples would not hurt)!
@@ -75,7 +79,7 @@ outlined further below:
 
 ::
 
-  pragma solidity ^0.4.0;
+  pragma solidity ^0.4.11;
 
   contract Fund {
       /// Mapping of ether shares of the contract.
@@ -84,8 +88,7 @@ outlined further below:
       function withdraw() {
           var share = shares[msg.sender];
           shares[msg.sender] = 0;
-          if (!msg.sender.send(share))
-              throw;
+          msg.sender.transfer(share);
       }
   }
 
@@ -117,25 +120,27 @@ Sending and Receiving Ether
   During the execution of the fallback function, the contract can only rely
   on the "gas stipend" (2300 gas) being available to it at that time. This stipend is not enough to access storage in any way.
   To be sure that your contract can receive Ether in that way, check the gas requirements of the fallback function
-  (for example in the "details" section in browser-solidity).
+  (for example in the "details" section in Remix).
 
 - There is a way to forward more gas to the receiving contract using
-  ``addr.call.value(x)()``. This is essentially the same as ``addr.send(x)``,
+  ``addr.call.value(x)()``. This is essentially the same as ``addr.transfer(x)``,
   only that it forwards all remaining gas and opens up the ability for the
-  recipient to perform more expensive actions. This might include calling back
+  recipient to perform more expensive actions (and it only returns a failure code
+  and does not automatically propagate the error). This might include calling back
   into the sending contract or other state changes you might not have thought of.
   So it allows for great flexibility for honest users but also for malicious actors.
 
-- If you want to send Ether using ``address.send``, there are certain details to be aware of:
+- If you want to send Ether using ``address.transfer``, there are certain details to be aware of:
 
   1. If the recipient is a contract, it causes its fallback function to be executed which can, in turn, call back the sending contract.
   2. Sending Ether can fail due to the call depth going above 1024. Since the caller is in total control of the call
-     depth, they can force the transfer to fail; make sure to always check the return value of ``send``. Better yet,
+     depth, they can force the transfer to fail; take this possibility into account or use ``send`` and make sure to always check its return value. Better yet,
      write your contract using a pattern where the recipient can withdraw Ether instead.
   3. Sending Ether can also fail because the execution of the recipient contract
-     requires more than the allotted amount of gas (explicitly by using ``throw`` or
+     requires more than the allotted amount of gas (explicitly by using ``require``,
+     ``assert``, ``revert``, ``throw`` or
      because the operation is just too expensive) - it "runs out of gas" (OOG).
-     If the return value of ``send`` is checked, this might provide a
+     If you use ``transfer`` or ``send`` with a return value check, this might provide a
      means for the recipient to block progress in the sending contract. Again, the best practice here is to use
      a :ref:`"withdraw" pattern instead of a "send" pattern <withdrawal_pattern>`.
 
@@ -158,7 +163,7 @@ Never use tx.origin for authorization. Let's say you have a wallet contract like
 
 ::
 
-    pragma solidity ^0.4.0;
+    pragma solidity ^0.4.11;
 
     // THIS CONTRACT CONTAINS A BUG - DO NOT USE
     contract TxUserWallet {
@@ -168,17 +173,19 @@ Never use tx.origin for authorization. Let's say you have a wallet contract like
             owner = msg.sender;
         }
 
-        function transfer(address dest, uint amount) {
-            if (tx.origin != owner) { throw; }
-            if (!dest.call.value(amount)()) throw;
+        function transferTo(address dest, uint amount) {
+            require(tx.origin == owner);
+            dest.transfer(amount);
         }
     }
 
-Now someone tricks you into sending ether to the address of this attack wallet:
+Now someone tricks you into sending ether to the address of this attack wallet::
 
-::
+    pragma solidity ^0.4.11;
 
-    pragma solidity ^0.4.0;
+    interface TxUserWallet {
+        function transferTo(address dest, uint amount);
+    }
 
     contract TxAttackWallet {
         address owner;
@@ -188,7 +195,7 @@ Now someone tricks you into sending ether to the address of this attack wallet:
         }
 
         function() {
-            TxUserWallet(msg.sender).transfer(owner, msg.sender.balance);
+            TxUserWallet(msg.sender).transferTo(owner, msg.sender.balance);
         }
     }
 
@@ -273,8 +280,7 @@ Formal Verification
 Using formal verification, it is possible to perform an automated mathematical
 proof that your source code fulfills a certain formal specification.
 The specification is still formal (just as the source code), but usually much
-simpler. There is a prototype in Solidity that performs formal verification and
-it will be better documented soon.
+simpler.
 
 Note that formal verification itself can only help you understand the
 difference between what you did (the specification) and how you did it

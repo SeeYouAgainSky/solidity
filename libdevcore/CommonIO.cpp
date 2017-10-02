@@ -30,10 +30,13 @@
 #include <termios.h>
 #endif
 #include <boost/filesystem.hpp>
-#include "Exceptions.h"
+#include "Assertions.h"
+
 using namespace std;
 using namespace dev;
 
+namespace
+{
 
 template <typename _T>
 inline _T contentsGeneric(std::string const& _file)
@@ -54,6 +57,8 @@ inline _T contentsGeneric(std::string const& _file)
 	ret.resize((length + c_elementSize - 1) / c_elementSize);
 	is.read(const_cast<char*>(reinterpret_cast<char const*>(ret.data())), length);
 	return ret;
+}
+
 }
 
 string dev::contentsString(string const& _file)
@@ -78,13 +83,24 @@ void dev::writeFile(std::string const& _file, bytesConstRef _data, bool _writeDe
 		if (!fs::exists(p.parent_path()))
 		{
 			fs::create_directories(p.parent_path());
-			DEV_IGNORE_EXCEPTIONS(fs::permissions(p.parent_path(), fs::owner_all));
+			try
+			{
+				fs::permissions(p.parent_path(), fs::owner_all);
+			}
+			catch (...)
+			{
+			}
 		}
 
 		ofstream s(_file, ios::trunc | ios::binary);
 		s.write(reinterpret_cast<char const*>(_data.data()), _data.size());
-		if (!s)
-			BOOST_THROW_EXCEPTION(FileError() << errinfo_comment("Could not write to file: " + _file));
-		DEV_IGNORE_EXCEPTIONS(fs::permissions(_file, fs::owner_read|fs::owner_write));
+		assertThrow(s, FileError, "Could not write to file: " + _file);
+		try
+		{
+			fs::permissions(_file, fs::owner_read|fs::owner_write);
+		}
+		catch (...)
+		{
+		}
 	}
 }

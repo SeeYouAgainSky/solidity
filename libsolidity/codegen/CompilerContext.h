@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <libsolidity/codegen/ABIFunctions.h>
+
 #include <libsolidity/ast/ASTForward.h>
 #include <libsolidity/ast/Types.h>
 #include <libsolidity/ast/ASTAnnotations.h>
@@ -48,7 +50,7 @@ namespace solidity {
 class CompilerContext
 {
 public:
-	CompilerContext(CompilerContext* _runtimeContext = nullptr):
+	explicit CompilerContext(CompilerContext* _runtimeContext = nullptr):
 		m_asm(std::make_shared<eth::Assembly>()),
 		m_runtimeContext(_runtimeContext)
 	{
@@ -56,7 +58,11 @@ public:
 			m_runtimeSub = size_t(m_asm->newSub(m_runtimeContext->m_asm).data());
 	}
 
-	void addMagicGlobal(MagicVariableDeclaration const& _declaration);
+	/// Update currently enabled set of experimental features.
+	void setExperimentalFeatures(std::set<ExperimentalFeature> const& _features) { m_experimentalFeatures = _features; }
+	/// @returns true if the given feature is enabled.
+	bool experimentalFeatureActive(ExperimentalFeature _feature) const { return m_experimentalFeatures.count(_feature); }
+
 	void addStateVariable(VariableDeclaration const& _declaration, u256 const& _storageOffset, unsigned _byteOffset);
 	void addVariable(VariableDeclaration const& _declaration, unsigned _offsetToCurrent = 0);
 	void removeVariable(VariableDeclaration const& _declaration);
@@ -68,7 +74,6 @@ public:
 	void adjustStackOffset(int _adjustment) { m_asm->adjustDeposit(_adjustment); }
 	unsigned stackHeight() const { solAssert(m_asm->deposit() >= 0, ""); return unsigned(m_asm->deposit()); }
 
-	bool isMagicGlobal(Declaration const* _declaration) const { return m_magicGlobals.count(_declaration) != 0; }
 	bool isLocalVariable(Declaration const* _declaration) const;
 	bool isStateVariable(Declaration const* _declaration) const { return m_stateVariables.count(_declaration) != 0; }
 
@@ -77,13 +82,15 @@ public:
 	/// @returns the entry label of the given function. Might return an AssemblyItem of type
 	/// UndefinedItem if it does not exist yet.
 	eth::AssemblyItem functionEntryLabelIfExists(Declaration const& _declaration) const;
-	void setInheritanceHierarchy(std::vector<ContractDefinition const*> const& _hierarchy) { m_inheritanceHierarchy = _hierarchy; }
 	/// @returns the entry label of the given function and takes overrides into account.
 	FunctionDefinition const& resolveVirtualFunction(FunctionDefinition const& _function);
 	/// @returns the function that overrides the given declaration from the most derived class just
 	/// above _base in the current inheritance hierarchy.
 	FunctionDefinition const& superFunction(FunctionDefinition const& _function, ContractDefinition const& _base);
+	/// @returns the next constructor in the inheritance hierarchy.
 	FunctionDefinition const* nextConstructor(ContractDefinition const& _contract) const;
+	/// Sets the current inheritance hierarchy from derived to base.
+	void setInheritanceHierarchy(std::vector<ContractDefinition const*> const& _hierarchy) { m_inheritanceHierarchy = _hierarchy; }
 
 	/// @returns the next function in the queue of functions that are still to be compiled
 	/// (i.e. that were referenced during compilation but where we did not yet generate code for).
@@ -116,6 +123,7 @@ public:
 	);
 	/// Generates the code for missing low-level functions, i.e. calls the generators passed above.
 	void appendMissingLowLevelFunctions();
+	ABIFunctions& abiFunctions() { return m_abiFunctions; }
 
 	ModifierDefinition const& functionModifier(std::string const& _name) const;
 	/// Returns the distance of the given local variable from the bottom of the stack (of the current function).
@@ -136,25 +144,30 @@ public:
 	/// Appends a JUMP to a new tag and @returns the tag
 	eth::AssemblyItem appendJumpToNew() { return m_asm->appendJump().tag(); }
 	/// Appends a JUMP to a tag already on the stack
-	CompilerContext&  appendJump(eth::AssemblyItem::JumpType _jumpType = eth::AssemblyItem::JumpType::Ordinary);
+	CompilerContext& appendJump(eth::AssemblyItem::JumpType _jumpType = eth::AssemblyItem::JumpType::Ordinary);
 	/// Appends an INVALID instruction
-	CompilerContext&  appendInvalid();
+	CompilerContext& appendInvalid();
 	/// Appends a conditional INVALID instruction
-	CompilerContext&  appendConditionalInvalid();
-	/// Returns an "ErrorTag"
-	eth::AssemblyItem errorTag() { return m_asm->errorTag(); }
+	CompilerContext& appendConditionalInvalid();
+	/// Appends a REVERT(0, 0) call
+	CompilerContext& appendRevert();
+	/// Appends a conditional REVERT(0, 0) call
+	CompilerContext& appendConditionalRevert();
 	/// Appends a JUMP to a specific tag
 	CompilerContext& appendJumpTo(eth::AssemblyItem const& _tag) { m_asm->appendJump(_tag); return *this; }
 	/// Appends pushing of a new tag and @returns the new tag.
 	eth::AssemblyItem pushNewTag() { return m_asm->append(m_asm->newPushTag()).tag(); }
 	/// @returns a new tag without pushing any opcodes or data
 	eth::AssemblyItem newTag() { return m_asm->newTag(); }
+	/// @returns a new tag identified by name.
+	eth::AssemblyItem namedTag(std::string const& _name) { return m_asm->namedTag(_name); }
 	/// Adds a subroutine to the code (in the data section) and pushes its size (via a tag)
 	/// on the stack. @returns the pushsub assembly item.
-	eth::AssemblyItem addSubroutine(eth::AssemblyPointer const& _assembly) { auto sub = m_asm->newSub(_assembly); m_asm->append(m_asm->newPushSubSize(size_t(sub.data()))); return sub; }
-	void pushSubroutineSize(size_t _subRoutine) { m_asm->append(m_asm->newPushSubSize(_subRoutine)); }
+	eth::AssemblyItem addSubroutine(eth::AssemblyPointer const& _assembly) { return m_asm->appendSubroutine(_assembly); }
+	/// Pushes the size of the subroutine.
+	void pushSubroutineSize(size_t _subRoutine) { m_asm->pushSubroutineSize(_subRoutine); }
 	/// Pushes the offset of the subroutine.
-	void pushSubroutineOffset(size_t _subRoutine) { m_asm->append(eth::AssemblyItem(eth::PushSub, _subRoutine)); }
+	void pushSubroutineOffset(size_t _subRoutine) { m_asm->pushSubroutineOffset(_subRoutine); }
 	/// Pushes the size of the final program
 	void appendProgramSize() { m_asm->appendProgramSize(); }
 	/// Adds data to the data section, pushes a reference to the stack
@@ -177,15 +190,17 @@ public:
 	/// Appends inline assembly. @a _replacements are string-matching replacements that are performed
 	/// prior to parsing the inline assembly.
 	/// @param _localVariables assigns stack positions to variables with the last one being the stack top
+	/// @param _system if true, this is a "system-level" assembly where all functions use named labels.
 	void appendInlineAssembly(
 		std::string const& _assembly,
 		std::vector<std::string> const& _localVariables = std::vector<std::string>(),
-		std::map<std::string, std::string> const& _replacements = std::map<std::string, std::string>{}
+		bool _system = false
 	);
 
 	/// Appends arbitrary data to the end of the bytecode.
 	void appendAuxiliaryData(bytes const& _data) { m_asm->appendAuxiliaryDataToEnd(_data); }
 
+	/// Run optimisation step.
 	void optimise(bool _fullOptimsation, unsigned _runs = 200) { m_asm->optimise(_fullOptimsation, true, _runs); }
 
 	/// @returns the runtime context if in creation mode and runtime context is set, nullptr otherwise.
@@ -193,20 +208,26 @@ public:
 	/// @returns the identifier of the runtime subroutine.
 	size_t runtimeSub() const { return m_runtimeSub; }
 
+	/// @returns a const reference to the underlying assembly.
 	eth::Assembly const& assembly() const { return *m_asm; }
 	/// @returns non-const reference to the underlying assembly. Should be avoided in favour of
 	/// wrappers in this class.
 	eth::Assembly& nonConstAssembly() { return *m_asm; }
 
 	/// @arg _sourceCodes is the map of input files to source code strings
-	/// @arg _inJsonFormat shows whether the out should be in Json format
-	Json::Value streamAssembly(std::ostream& _stream, StringMap const& _sourceCodes = StringMap(), bool _inJsonFormat = false) const
+	std::string assemblyString(StringMap const& _sourceCodes = StringMap()) const
 	{
-		return m_asm->stream(_stream, "", _sourceCodes, _inJsonFormat);
+		return m_asm->assemblyString(_sourceCodes);
 	}
 
-	eth::LinkerObject const& assembledObject() { return m_asm->assemble(); }
-	eth::LinkerObject const& assembledRuntimeObject(size_t _subIndex) { return m_asm->sub(_subIndex).assemble(); }
+	/// @arg _sourceCodes is the map of input files to source code strings
+	Json::Value assemblyJSON(StringMap const& _sourceCodes = StringMap()) const
+	{
+		return m_asm->assemblyJSON(_sourceCodes);
+	}
+
+	eth::LinkerObject const& assembledObject() const { return m_asm->assemble(); }
+	eth::LinkerObject const& assembledRuntimeObject(size_t _subIndex) const { return m_asm->sub(_subIndex).assemble(); }
 
 	/**
 	 * Helper class to pop the visited nodes stack when a scope closes
@@ -263,14 +284,17 @@ private:
 	} m_functionCompilationQueue;
 
 	eth::AssemblyPointer m_asm;
-	/// Magic global variables like msg, tx or this, distinguished by type.
-	std::set<Declaration const*> m_magicGlobals;
+	/// Activated experimental features.
+	std::set<ExperimentalFeature> m_experimentalFeatures;
 	/// Other already compiled contracts to be used in contract creation calls.
 	std::map<ContractDefinition const*, eth::Assembly const*> m_compiledContracts;
 	/// Storage offsets of state variables
 	std::map<Declaration const*, std::pair<u256, unsigned>> m_stateVariables;
 	/// Offsets of local variables on the stack (relative to stack base).
-	std::map<Declaration const*, unsigned> m_localVariables;
+	/// This needs to be a stack because if a modifier contains a local variable and this
+	/// modifier is applied twice, the position of the variable needs to be restored
+	/// after the nested modifier is left.
+	std::map<Declaration const*, std::vector<unsigned>> m_localVariables;
 	/// List of current inheritance hierarchy from derived to base.
 	std::vector<ContractDefinition const*> m_inheritanceHierarchy;
 	/// Stack of current visited AST nodes, used for location attachment
@@ -281,6 +305,8 @@ private:
 	size_t m_runtimeSub = -1;
 	/// An index of low-level function labels by name.
 	std::map<std::string, eth::AssemblyItem> m_lowLevelFunctions;
+	/// Container for ABI functions to be generated.
+	ABIFunctions m_abiFunctions;
 	/// The queue of low-level functions to generate.
 	std::queue<std::tuple<std::string, unsigned, unsigned, std::function<void(CompilerContext&)>>> m_lowLevelFunctionGenerationQueue;
 };

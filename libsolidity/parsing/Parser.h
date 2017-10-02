@@ -35,7 +35,7 @@ class Scanner;
 class Parser: public ParserBase
 {
 public:
-	Parser(ErrorList& _errors): ParserBase(_errors) {}
+	explicit Parser(ErrorReporter& _errorReporter): ParserBase(_errorReporter) {}
 
 	ASTPointer<SourceUnit> parse(std::shared_ptr<Scanner> const& _scanner);
 
@@ -60,8 +60,7 @@ private:
 		ASTPointer<ParameterList> parameters;
 		ASTPointer<ParameterList> returnParameters;
 		Declaration::Visibility visibility = Declaration::Visibility::Default;
-		bool isDeclaredConst = false;
-		bool isPayable = false;
+		StateMutability stateMutability = StateMutability::NonPayable;
 		std::vector<ASTPointer<ModifierInvocation>> modifiers;
 	};
 
@@ -69,9 +68,11 @@ private:
 	///@name Parsing functions for the AST nodes
 	ASTPointer<PragmaDirective> parsePragmaDirective();
 	ASTPointer<ImportDirective> parseImportDirective();
-	ASTPointer<ContractDefinition> parseContractDefinition(bool _isLibrary);
+	ContractDefinition::ContractKind tokenToContractKind(Token::Value _token);
+	ASTPointer<ContractDefinition> parseContractDefinition(Token::Value _expectedKind);
 	ASTPointer<InheritanceSpecifier> parseInheritanceSpecifier();
 	Declaration::Visibility parseVisibilitySpecifier(Token::Value _token);
+	StateMutability parseStateMutability(Token::Value _token);
 	FunctionHeaderParserResult parseFunctionHeader(bool _forceEmptyName, bool _allowModifiers);
 	ASTPointer<ASTNode> parseFunctionDefinitionOrFunctionTypeStateVariable(ASTString const* _contractName);
 	ASTPointer<FunctionDefinition> parseFunctionDefinition(ASTString const* _contractName);
@@ -153,6 +154,11 @@ private:
 		std::vector<ASTPointer<PrimaryExpression>> const& _path,
 		std::vector<std::pair<ASTPointer<Expression>, SourceLocation>> const& _indices
 	);
+
+	std::string currentTokenName();
+	Token::Value expectAssignmentOperator();
+	ASTPointer<ASTString> expectIdentifierToken();
+	ASTPointer<ASTString> getLiteralAndAdvance();
 	///@}
 
 	/// Creates an empty ParameterList at the current location (used if parameters can be omitted).

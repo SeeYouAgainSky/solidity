@@ -21,7 +21,6 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#include "libdevcore/UndefMacros.h"
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -30,6 +29,7 @@
 
 #include <json/value.h>
 
+#include <boost/noncopyable.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include <string>
@@ -40,7 +40,7 @@
 class IPCSocket : public boost::noncopyable
 {
 public:
-	IPCSocket(std::string const& _path);
+	explicit IPCSocket(std::string const& _path);
 	std::string sendRequest(std::string const& _req);
 	~IPCSocket() { CloseHandle(m_socket); }
 
@@ -55,7 +55,7 @@ private:
 class IPCSocket: public boost::noncopyable
 {
 public:
-	IPCSocket(std::string const& _path);
+	explicit IPCSocket(std::string const& _path);
 	std::string sendRequest(std::string const& _req);
 	~IPCSocket() { close(m_socket); }
 
@@ -67,7 +67,7 @@ private:
 	int m_socket;
 	/// Socket read timeout in milliseconds. Needs to be large because the key generation routine
 	/// might take long.
-	unsigned static constexpr m_readTimeOutMS = 15000;
+	unsigned static constexpr m_readTimeOutMS = 300000;
 	char m_readBuf[512000];
 };
 #endif
@@ -107,7 +107,7 @@ public:
 	Json::Value eth_getBlockByNumber(std::string const& _blockNumber, bool _fullObjects);
 	std::string eth_call(TransactionData const& _td, std::string const& _blockNumber);
 	TransactionReceipt eth_getTransactionReceipt(std::string const& _transactionHash);
-	std::string eth_sendTransaction(TransactionData const& _transactionData);
+	std::string eth_sendTransaction(TransactionData const& _td);
 	std::string eth_sendTransaction(std::string const& _transaction);
 	std::string eth_getBalance(std::string const& _address, std::string const& _blockNumber);
 	std::string eth_getStorageRoot(std::string const& _address, std::string const& _blockNumber);
@@ -124,7 +124,7 @@ public:
 	std::string const& accountCreateIfNotExists(size_t _id);
 
 private:
-	RPCSession(std::string const& _path);
+	explicit RPCSession(std::string const& _path);
 
 	inline std::string quote(std::string const& _arg) { return "\"" + _arg + "\""; }
 	/// Parse std::string replacing keywords to values
@@ -132,7 +132,7 @@ private:
 
 	IPCSocket m_ipcSocket;
 	size_t m_rpcSequence = 1;
-	unsigned m_maxMiningTime = 15000; // 15 seconds
+	unsigned m_maxMiningTime = 6000000; // 600 seconds
 	unsigned m_sleepTime = 10; // 10 milliseconds
 	unsigned m_successfulMineRuns = 0;
 

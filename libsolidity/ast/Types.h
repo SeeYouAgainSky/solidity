@@ -24,18 +24,20 @@
 
 #include <libsolidity/interface/Exceptions.h>
 #include <libsolidity/ast/ASTForward.h>
+#include <libsolidity/ast/ASTEnums.h>
 #include <libsolidity/parsing/Token.h>
 
 #include <libdevcore/Common.h>
 #include <libdevcore/CommonIO.h>
-#include <libdevcore/UndefMacros.h>
 
 #include <boost/noncopyable.hpp>
 #include <boost/rational.hpp>
+#include <boost/optional.hpp>
 
 #include <memory>
 #include <string>
 #include <map>
+#include <set>
 
 namespace dev
 {
@@ -188,6 +190,7 @@ public:
 	/// @returns number of bytes used by this type when encoded for CALL. If it is a dynamic type,
 	/// returns the size of the pointer (usually 32). Returns 0 if the type cannot be encoded
 	/// in calldata.
+	/// @note: This should actually not be called on types, where isDynamicallyEncoded returns true.
 	/// If @a _padded then it is assumed that each element is padded to a multiple of 32 bytes.
 	virtual unsigned calldataEncodedSize(bool _padded) const { (void)_padded; return 0; }
 	/// @returns the size of this data type in bytes when stored in memory. For memory-reference
@@ -195,8 +198,10 @@ public:
 	virtual unsigned memoryHeadSize() const { return calldataEncodedSize(); }
 	/// Convenience version of @see calldataEncodedSize(bool)
 	unsigned calldataEncodedSize() const { return calldataEncodedSize(true); }
-	/// @returns true if the type is dynamically encoded in calldata
+	/// @returns true if the type is a dynamic array
 	virtual bool isDynamicallySized() const { return false; }
+	/// @returns true if the type is dynamically encoded in the ABI
+	virtual bool isDynamicallyEncoded() const { return false; }
 	/// @returns the number of storage slots required to hold this value in storage.
 	/// For dynamically "allocated" types, it returns the size of the statically allocated head,
 	virtual u256 storageSize() const { return 1; }
@@ -241,15 +246,18 @@ public:
 
 	virtual std::string toString(bool _short) const = 0;
 	std::string toString() const { return toString(false); }
-	/// @returns the canonical name of this type for use in function signatures.
-	/// @param _addDataLocation if true, includes data location for reference types if it is "storage".
-	virtual std::string canonicalName(bool /*_addDataLocation*/) const { return toString(true); }
+	/// @returns the canonical name of this type for use in library function signatures.
+	virtual std::string canonicalName() const { return toString(true); }
+	/// @returns the signature of this type in external functions, i.e. `uint256` for integers
+	/// or `(uint256,bytes8)[2]` for an array of structs. If @a _structsByName,
+	/// structs are given by canonical name like `ContractName.StructName[2]`.
+	virtual std::string signatureInExternalFunction(bool /*_structsByName*/) const
+	{
+		return canonicalName();
+	}
 	virtual u256 literalValue(Literal const*) const
 	{
-		BOOST_THROW_EXCEPTION(
-			InternalCompilerError() <<
-			errinfo_comment("Literal value requested for type without literals.")
-		);
+		solAssert(false, "Literal value requested for type without literals.");
 	}
 
 	/// @returns a (simpler) type that is encoded in the same way for external function calls.
@@ -323,6 +331,9 @@ public:
 	bool isAddress() const { return m_modifier == Modifier::Address; }
 	bool isSigned() const { return m_modifier == Modifier::Signed; }
 
+	bigint minValue() const;
+	bigint maxValue() const;
+
 private:
 	int m_bits;
 	Modifier m_modifier;
@@ -340,7 +351,7 @@ public:
 	};
 	virtual Category category() const override { return Category::FixedPoint; }
 
-	explicit FixedPointType(int _integerBits, int _fractionalBits, Modifier _modifier = Modifier::Unsigned);
+	explicit FixedPointType(int _totalBits, int _fractionalDigits, Modifier _modifier = Modifier::Unsigned);
 
 	virtual std::string identifier() const override;
 	virtual bool isImplicitlyConvertibleTo(Type const& _convertTo) const override;
@@ -350,8 +361,8 @@ public:
 
 	virtual bool operator==(Type const& _other) const override;
 
-	virtual unsigned calldataEncodedSize(bool _padded = true) const override { return _padded ? 32 : (m_integerBits + m_fractionalBits) / 8; }
-	virtual unsigned storageBytes() const override { return (m_integerBits + m_fractionalBits) / 8; }
+	virtual unsigned calldataEncodedSize(bool _padded = true) const override { return _padded ? 32 : m_totalBits / 8; }
+	virtual unsigned storageBytes() const override { return m_totalBits / 8; }
 	virtual bool isValueType() const override { return true; }
 
 	virtual std::string toString(bool _short) const override;
@@ -359,14 +370,21 @@ public:
 	virtual TypePointer encodingType() const override { return shared_from_this(); }
 	virtual TypePointer interfaceType(bool) const override { return shared_from_this(); }
 
-	int numBits() const { return m_integerBits + m_fractionalBits; }
-	int integerBits() const { return m_integerBits; }
-	int fractionalBits() const { return m_fractionalBits; }
+	/// Number of bits used for this type in total.
+	int numBits() const { return m_totalBits; }
+	/// Number of decimal digits after the radix point.
+	int fractionalDigits() const { return m_fractionalDigits; }
 	bool isSigned() const { return m_modifier == Modifier::Signed; }
+	/// @returns the largest integer value this type con hold. Note that this is not the
+	/// largest value in general.
+	bigint maxIntegerValue() const;
+	/// @returns the smallest integer value this type can hold. Note hat this is not the
+	/// smallest value in general.
+	bigint minIntegerValue() const;
 
 private:
-	int m_integerBits;
-	int m_fractionalBits;
+	int m_totalBits;
+	int m_fractionalDigits;
 	Modifier m_modifier;
 };
 
@@ -416,6 +434,9 @@ public:
 
 private:
 	rational m_value;
+
+	/// @returns true if the literal is a valid rational number.
+	static std::tuple<bool, rational> parseRational(std::string const& _value);
 };
 
 /**
@@ -600,16 +621,21 @@ public:
 	virtual bool operator==(const Type& _other) const override;
 	virtual unsigned calldataEncodedSize(bool _padded) const override;
 	virtual bool isDynamicallySized() const override { return m_hasDynamicLength; }
+	virtual bool isDynamicallyEncoded() const override;
 	virtual u256 storageSize() const override;
 	virtual bool canLiveOutsideStorage() const override { return m_baseType->canLiveOutsideStorage(); }
 	virtual unsigned sizeOnStack() const override;
 	virtual std::string toString(bool _short) const override;
-	virtual std::string canonicalName(bool _addDataLocation) const override;
+	virtual std::string canonicalName() const override;
+	virtual std::string signatureInExternalFunction(bool _structsByName) const override;
 	virtual MemberList::MemberMap nativeMembers(ContractDefinition const* _currentScope) const override;
 	virtual TypePointer encodingType() const override;
 	virtual TypePointer decodingType() const override;
 	virtual TypePointer interfaceType(bool _inLibrary) const override;
 	virtual bool canBeUsedExternally(bool _inLibrary) const override;
+
+	/// @returns true if this is valid to be stored in calldata
+	bool validForCalldata() const;
 
 	/// @returns true if this is a byte array or a string
 	bool isByteArray() const { return m_arrayKind != ArrayKind::Ordinary; }
@@ -624,6 +650,8 @@ public:
 private:
 	/// String is interpreted as a subtype of Bytes.
 	enum class ArrayKind { Ordinary, Bytes, String };
+
+	bigint unlimitedCalldataEncodedSize(bool _padded) const;
 
 	///< Byte arrays ("bytes") and strings have different semantics from ordinary arrays.
 	ArrayKind m_arrayKind = ArrayKind::Ordinary;
@@ -657,7 +685,7 @@ public:
 	virtual unsigned sizeOnStack() const override { return m_super ? 0 : 1; }
 	virtual bool isValueType() const override { return true; }
 	virtual std::string toString(bool _short) const override;
-	virtual std::string canonicalName(bool _addDataLocation) const override;
+	virtual std::string canonicalName() const override;
 
 	virtual MemberList::MemberMap nativeMembers(ContractDefinition const* _currentScope) const override;
 	virtual TypePointer encodingType() const override
@@ -670,6 +698,10 @@ public:
 	}
 
 	bool isSuper() const { return m_super; }
+
+	// @returns true if and only if the contract has a payable fallback function
+	bool isPayable() const;
+
 	ContractDefinition const& contractDefinition() const { return m_contract; }
 
 	/// Returns the function type of the constructor modified to return an object of the contract's type.
@@ -684,6 +716,8 @@ public:
 	std::vector<std::tuple<VariableDeclaration const*, u256, unsigned>> stateVariables() const;
 
 private:
+	static void addNonConflictingAddressMembers(MemberList::MemberMap& _members);
+
 	ContractDefinition const& m_contract;
 	/// If true, it is the "super" type of the current contract, i.e. it contains only inherited
 	/// members.
@@ -705,6 +739,7 @@ public:
 	virtual std::string identifier() const override;
 	virtual bool operator==(Type const& _other) const override;
 	virtual unsigned calldataEncodedSize(bool _padded) const override;
+	virtual bool isDynamicallyEncoded() const override;
 	u256 memorySize() const;
 	virtual u256 storageSize() const override;
 	virtual bool canLiveOutsideStorage() const override { return true; }
@@ -713,13 +748,15 @@ public:
 	virtual MemberList::MemberMap nativeMembers(ContractDefinition const* _currentScope) const override;
 	virtual TypePointer encodingType() const override
 	{
-		return location() == DataLocation::Storage ? std::make_shared<IntegerType>(256) : TypePointer();
+		return location() == DataLocation::Storage ? std::make_shared<IntegerType>(256) : shared_from_this();
 	}
 	virtual TypePointer interfaceType(bool _inLibrary) const override;
+	virtual bool canBeUsedExternally(bool _inLibrary) const override;
 
 	TypePointer copyForLocation(DataLocation _location, bool _isPointer) const override;
 
-	virtual std::string canonicalName(bool _addDataLocation) const override;
+	virtual std::string canonicalName() const override;
+	virtual std::string signatureInExternalFunction(bool _structsByName) const override;
 
 	/// @returns a function that peforms the type conversion between a list of struct members
 	/// and a memory struct of this type.
@@ -730,11 +767,19 @@ public:
 
 	StructDefinition const& structDefinition() const { return m_struct; }
 
+	/// @returns the vector of types of members available in memory.
+	TypePointers memoryMemberTypes() const;
 	/// @returns the set of all members that are removed in the memory version (typically mappings).
 	std::set<std::string> membersMissingInMemory() const;
 
+	/// @returns true if the same struct is used recursively in one of its members. Only
+	/// analyses the "memory" representation, i.e. mappings are ignored in all structs.
+	bool recursive() const;
+
 private:
 	StructDefinition const& m_struct;
+	/// Cache for the recursive() function.
+	mutable boost::optional<bool> m_recursive;
 };
 
 /**
@@ -755,7 +800,7 @@ public:
 	virtual unsigned storageBytes() const override;
 	virtual bool canLiveOutsideStorage() const override { return true; }
 	virtual std::string toString(bool _short) const override;
-	virtual std::string canonicalName(bool _addDataLocation) const override;
+	virtual std::string canonicalName() const override;
 	virtual bool isValueType() const override { return true; }
 
 	virtual bool isExplicitlyConvertibleTo(Type const& _convertTo) const override;
@@ -814,14 +859,13 @@ class FunctionType: public Type
 {
 public:
 	/// How this function is invoked on the EVM.
-	/// @todo This documentation is outdated, and Location should rather be named "Type"
-	enum class Location
+	enum class Kind
 	{
 		Internal, ///< stack-call using plain JUMP
 		External, ///< external call using CALL
 		CallCode, ///< external call using CALLCODE, i.e. not exchanging the storage
 		DelegateCall, ///< external call using DELEGATECALL, i.e. not exchanging the storage
-		Bare, ///< CALL without function hash
+		BareCall, ///< CALL without function hash
 		BareCallCode, ///< CALLCODE without function hash
 		BareDelegateCall, ///< DELEGATECALL without function hash
 		Creation, ///< external call using CREATE
@@ -847,7 +891,8 @@ public:
 		ArrayPush, ///< .push() to a dynamically sized array in storage
 		ByteArrayPush, ///< .push() to a dynamically sized byte array in storage
 		ObjectCreation, ///< array creation using new
-		Assert ///< assert()
+		Assert, ///< assert()
+		Require ///< require()
 	};
 
 	virtual Category category() const override { return Category::Function; }
@@ -864,20 +909,17 @@ public:
 	FunctionType(
 		strings const& _parameterTypes,
 		strings const& _returnParameterTypes,
-		Location _location = Location::Internal,
+		Kind _kind = Kind::Internal,
 		bool _arbitraryParameters = false,
-		bool _constant = false,
-		bool _payable = false
+		StateMutability _stateMutability = StateMutability::NonPayable
 	): FunctionType(
 		parseElementaryTypeVector(_parameterTypes),
 		parseElementaryTypeVector(_returnParameterTypes),
 		strings(),
 		strings(),
-		_location,
+		_kind,
 		_arbitraryParameters,
-		nullptr,
-		_constant,
-		_payable
+		_stateMutability
 	)
 	{
 	}
@@ -891,11 +933,10 @@ public:
 		TypePointers const& _returnParameterTypes,
 		strings _parameterNames = strings(),
 		strings _returnParameterNames = strings(),
-		Location _location = Location::Internal,
+		Kind _kind = Kind::Internal,
 		bool _arbitraryParameters = false,
+		StateMutability _stateMutability = StateMutability::NonPayable,
 		Declaration const* _declaration = nullptr,
-		bool _isConstant = false,
-		bool _isPayable = false,
 		bool _gasSet = false,
 		bool _valueSet = false,
 		bool _bound = false
@@ -904,13 +945,12 @@ public:
 		m_returnParameterTypes(_returnParameterTypes),
 		m_parameterNames(_parameterNames),
 		m_returnParameterNames(_returnParameterNames),
-		m_location(_location),
+		m_kind(_kind),
+		m_stateMutability(_stateMutability),
 		m_arbitraryParameters(_arbitraryParameters),
 		m_gasSet(_gasSet),
 		m_valueSet(_valueSet),
 		m_bound(_bound),
-		m_isConstant(_isConstant),
-		m_isPayable(_isPayable),
 		m_declaration(_declaration)
 	{
 		solAssert(
@@ -930,14 +970,15 @@ public:
 	virtual bool operator==(Type const& _other) const override;
 	virtual bool isExplicitlyConvertibleTo(Type const& _convertTo) const override;
 	virtual TypePointer unaryOperatorResult(Token::Value _operator) const override;
-	virtual std::string canonicalName(bool /*_addDataLocation*/) const override;
+	virtual TypePointer binaryOperatorResult(Token::Value, TypePointer const&) const override;
+	virtual std::string canonicalName() const override;
 	virtual std::string toString(bool _short) const override;
 	virtual unsigned calldataEncodedSize(bool _padded) const override;
-	virtual bool canBeStored() const override { return m_location == Location::Internal || m_location == Location::External; }
+	virtual bool canBeStored() const override { return m_kind == Kind::Internal || m_kind == Kind::External; }
 	virtual u256 storageSize() const override;
 	virtual unsigned storageBytes() const override;
 	virtual bool isValueType() const override { return true; }
-	virtual bool canLiveOutsideStorage() const override { return m_location == Location::Internal || m_location == Location::External; }
+	virtual bool canLiveOutsideStorage() const override { return m_kind == Kind::Internal || m_kind == Kind::External; }
 	virtual unsigned sizeOnStack() const override;
 	virtual MemberList::MemberMap nativeMembers(ContractDefinition const* _currentScope) const override;
 	virtual TypePointer encodingType() const override;
@@ -960,7 +1001,8 @@ public:
 
 	/// @returns true if the ABI is used for this call (only meaningful for external calls)
 	bool isBareCall() const;
-	Location const& location() const { return m_location; }
+	Kind const& kind() const { return m_kind; }
+	StateMutability stateMutability() const { return m_stateMutability; }
 	/// @returns the external signature of this function type given the function name
 	std::string externalSignature() const;
 	/// @returns the external identifier of this function (the hash of the signature).
@@ -971,14 +1013,17 @@ public:
 		return *m_declaration;
 	}
 	bool hasDeclaration() const { return !!m_declaration; }
-	bool isConstant() const { return m_isConstant; }
-	bool isPayable() const { return m_isPayable; }
+	/// @returns true if the the result of this function only depends on its arguments
+	/// and it does not modify the state.
+	/// Currently, this will only return true for internal functions like keccak and ecrecover.
+	bool isPure() const;
+	bool isPayable() const { return m_stateMutability == StateMutability::Payable; }
 	/// @return A shared pointer of an ASTString.
 	/// Can contain a nullptr in which case indicates absence of documentation
 	ASTPointer<ASTString> documentation() const;
 
 	/// true iff arguments are to be padded to multiples of 32 bytes for external calls
-	bool padArguments() const { return !(m_location == Location::SHA3 || m_location == Location::SHA256 || m_location == Location::RIPEMD160); }
+	bool padArguments() const { return !(m_kind == Kind::SHA3 || m_kind == Kind::SHA256 || m_kind == Kind::RIPEMD160); }
 	bool takesArbitraryParameters() const { return m_arbitraryParameters; }
 	bool gasSet() const { return m_gasSet; }
 	bool valueSet() const { return m_valueSet; }
@@ -1004,14 +1049,13 @@ private:
 	TypePointers m_returnParameterTypes;
 	std::vector<std::string> m_parameterNames;
 	std::vector<std::string> m_returnParameterNames;
-	Location const m_location;
+	Kind const m_kind;
+	StateMutability m_stateMutability = StateMutability::NonPayable;
 	/// true if the function takes an arbitrary number of arguments of arbitrary types
 	bool const m_arbitraryParameters = false;
 	bool const m_gasSet = false; ///< true iff the gas value to be used is on the stack
 	bool const m_valueSet = false; ///< true iff the value to be sent is on the stack
 	bool const m_bound = false; ///< true iff the function is called as arg1.fun(arg2, ..., argn)
-	bool m_isConstant = false;
-	bool m_isPayable = false;
 	Declaration const* m_declaration = nullptr;
 };
 
@@ -1029,8 +1073,9 @@ public:
 	virtual std::string identifier() const override;
 	virtual bool operator==(Type const& _other) const override;
 	virtual std::string toString(bool _short) const override;
-	virtual std::string canonicalName(bool _addDataLocation) const override;
+	virtual std::string canonicalName() const override;
 	virtual bool canLiveOutsideStorage() const override { return false; }
+	virtual TypePointer binaryOperatorResult(Token::Value, TypePointer const&) const override { return TypePointer(); }
 	virtual TypePointer encodingType() const override
 	{
 		return std::make_shared<IntegerType>(256);
@@ -1039,6 +1084,7 @@ public:
 	{
 		return _inLibrary ? shared_from_this() : TypePointer();
 	}
+	virtual bool dataStoredIn(DataLocation _location) const override { return _location == DataLocation::Storage; }
 
 	TypePointer const& keyType() const { return m_keyType; }
 	TypePointer const& valueType() const { return m_valueType; }
@@ -1109,11 +1155,7 @@ public:
 
 	explicit ModuleType(SourceUnit const& _source): m_sourceUnit(_source) {}
 
-	virtual TypePointer binaryOperatorResult(Token::Value, TypePointer const&) const override
-	{
-		return TypePointer();
-	}
-
+	virtual TypePointer binaryOperatorResult(Token::Value, TypePointer const&) const override { return TypePointer(); }
 	virtual std::string identifier() const override;
 	virtual bool operator==(Type const& _other) const override;
 	virtual bool canBeStored() const override { return false; }
@@ -1171,6 +1213,7 @@ public:
 	virtual std::string identifier() const override { return "t_inaccessible"; }
 	virtual bool isImplicitlyConvertibleTo(Type const&) const override { return false; }
 	virtual bool isExplicitlyConvertibleTo(Type const&) const override { return false; }
+	virtual TypePointer binaryOperatorResult(Token::Value, TypePointer const&) const override { return TypePointer(); }
 	virtual unsigned calldataEncodedSize(bool _padded) const override { (void)_padded; return 32; }
 	virtual bool canBeStored() const override { return false; }
 	virtual bool canLiveOutsideStorage() const override { return false; }

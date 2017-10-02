@@ -220,6 +220,7 @@ void CSECodeGenerator::addDependencies(Id _c)
 	if (m_neededBy.count(_c))
 		return; // we already computed the dependencies for _c
 	ExpressionClasses::Expression expr = m_expressionClasses.representative(_c);
+	assertThrow(expr.item, OptimizerException, "");
 	if (expr.item->type() == UndefinedItem)
 		BOOST_THROW_EXCEPTION(
 			// If this exception happens, we need to find a different way to generate the
@@ -234,7 +235,7 @@ void CSECodeGenerator::addDependencies(Id _c)
 	if (expr.item && expr.item->type() == Operation && (
 		expr.item->instruction() == Instruction::SLOAD ||
 		expr.item->instruction() == Instruction::MLOAD ||
-		expr.item->instruction() == Instruction::SHA3
+		expr.item->instruction() == Instruction::KECCAK256
 	))
 	{
 		// this loads an unknown value from storage or memory and thus, in addition to its
@@ -260,7 +261,7 @@ void CSECodeGenerator::addDependencies(Id _c)
 			case Instruction::MLOAD:
 				knownToBeIndependent = m_expressionClasses.knownToBeDifferentBy32(slot, slotToLoadFrom);
 				break;
-			case Instruction::SHA3:
+			case Instruction::KECCAK256:
 			{
 				Id length = expr.arguments.at(1);
 				AssemblyItem offsetInstr(Instruction::SUB, expr.item->location());

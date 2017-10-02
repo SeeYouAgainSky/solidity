@@ -25,8 +25,13 @@
 #include <libsolidity/ast/AST.h>
 #include <libsolidity/codegen/Compiler.h>
 #include <libsolidity/interface/Version.h>
-#include <libsolidity/inlineasm/AsmData.h>
-#include <libsolidity/inlineasm/AsmStack.h>
+#include <libsolidity/interface/ErrorReporter.h>
+#include <libsolidity/interface/SourceReferenceFormatter.h>
+#include <libsolidity/parsing/Scanner.h>
+#include <libsolidity/inlineasm/AsmParser.h>
+#include <libsolidity/inlineasm/AsmCodeGen.h>
+#include <libsolidity/inlineasm/AsmAnalysis.h>
+#include <libsolidity/inlineasm/AsmAnalysisInfo.h>
 
 #include <boost/algorithm/string/replace.hpp>
 
@@ -39,11 +44,6 @@ namespace dev
 {
 namespace solidity
 {
-
-void CompilerContext::addMagicGlobal(MagicVariableDeclaration const& _declaration)
-{
-	m_magicGlobals.insert(&_declaration);
-}
 
 void CompilerContext::addStateVariable(
 	VariableDeclaration const& _declaration,
@@ -120,13 +120,15 @@ void CompilerContext::addVariable(VariableDeclaration const& _declaration,
 								  unsigned _offsetToCurrent)
 {
 	solAssert(m_asm->deposit() >= 0 && unsigned(m_asm->deposit()) >= _offsetToCurrent, "");
-	m_localVariables[&_declaration] = unsigned(m_asm->deposit()) - _offsetToCurrent;
+	m_localVariables[&_declaration].push_back(unsigned(m_asm->deposit()) - _offsetToCurrent);
 }
 
 void CompilerContext::removeVariable(VariableDeclaration const& _declaration)
 {
-	solAssert(!!m_localVariables.count(&_declaration), "");
-	m_localVariables.erase(&_declaration);
+	solAssert(m_localVariables.count(&_declaration) && !m_localVariables[&_declaration].empty(), "");
+	m_localVariables[&_declaration].pop_back();
+	if (m_localVariables[&_declaration].empty())
+		m_localVariables.erase(&_declaration);
 }
 
 eth::Assembly const& CompilerContext::compiledContract(const ContractDefinition& _contract) const
@@ -191,15 +193,15 @@ ModifierDefinition const& CompilerContext::functionModifier(string const& _name)
 		for (ModifierDefinition const* modifier: contract->functionModifiers())
 			if (modifier->name() == _name)
 				return *modifier;
-	BOOST_THROW_EXCEPTION(InternalCompilerError()
-		<< errinfo_comment("Function modifier " + _name + " not found."));
+	solAssert(false, "Function modifier " + _name + " not found.");
 }
 
 unsigned CompilerContext::baseStackOffsetOfVariable(Declaration const& _declaration) const
 {
 	auto res = m_localVariables.find(&_declaration);
 	solAssert(res != m_localVariables.end(), "Variable not found on stack.");
-	return res->second;
+	solAssert(!res->second.empty(), "");
+	return res->second.back();
 }
 
 unsigned CompilerContext::baseToCurrentStackOffset(unsigned _baseOffset) const
@@ -240,6 +242,20 @@ CompilerContext& CompilerContext::appendConditionalInvalid()
 	return *this;
 }
 
+CompilerContext& CompilerContext::appendRevert()
+{
+	return *this << u256(0) << u256(0) << Instruction::REVERT;
+}
+
+CompilerContext& CompilerContext::appendConditionalRevert()
+{
+	*this << Instruction::ISZERO;
+	eth::AssemblyItem afterTag = appendConditionalJump();
+	appendRevert();
+	*this << afterTag;
+	return *this;
+}
+
 void CompilerContext::resetVisitedNodes(ASTNode const* _node)
 {
 	stack<ASTNode const*> newStack;
@@ -251,48 +267,75 @@ void CompilerContext::resetVisitedNodes(ASTNode const* _node)
 void CompilerContext::appendInlineAssembly(
 	string const& _assembly,
 	vector<string> const& _localVariables,
-	map<string, string> const& _replacements
+	bool _system
 )
 {
-	string replacedAssembly;
-	string const* assembly = &_assembly;
-	if (!_replacements.empty())
-	{
-		replacedAssembly = _assembly;
-		for (auto const& replacement: _replacements)
-			replacedAssembly = boost::algorithm::replace_all_copy(replacedAssembly, replacement.first, replacement.second);
-		assembly = &replacedAssembly;
-	}
+	int startStackHeight = stackHeight();
 
-	unsigned startStackHeight = stackHeight();
-	auto identifierAccess = [&](
+	julia::ExternalIdentifierAccess identifierAccess;
+	identifierAccess.resolve = [&](
 		assembly::Identifier const& _identifier,
-		eth::Assembly& _assembly,
-		assembly::CodeGenerator::IdentifierContext _context
-	) {
+		julia::IdentifierContext,
+		bool
+	)
+	{
 		auto it = std::find(_localVariables.begin(), _localVariables.end(), _identifier.name);
-		if (it == _localVariables.end())
-			return false;
-		unsigned stackDepth = _localVariables.end() - it;
-		int stackDiff = _assembly.deposit() - startStackHeight + stackDepth;
-		if (_context == assembly::CodeGenerator::IdentifierContext::LValue)
+		return it == _localVariables.end() ? size_t(-1) : 1;
+	};
+	identifierAccess.generateCode = [&](
+		assembly::Identifier const& _identifier,
+		julia::IdentifierContext _context,
+		julia::AbstractAssembly& _assembly
+	)
+	{
+		auto it = std::find(_localVariables.begin(), _localVariables.end(), _identifier.name);
+		solAssert(it != _localVariables.end(), "");
+		int stackDepth = _localVariables.end() - it;
+		int stackDiff = _assembly.stackHeight() - startStackHeight + stackDepth;
+		if (_context == julia::IdentifierContext::LValue)
 			stackDiff -= 1;
 		if (stackDiff < 1 || stackDiff > 16)
 			BOOST_THROW_EXCEPTION(
 				CompilerError() <<
-				errinfo_comment("Stack too deep, try removing local variables.")
+				errinfo_sourceLocation(_identifier.location) <<
+				errinfo_comment("Stack too deep (" + to_string(stackDiff) + "), try removing local variables.")
 			);
-		if (_context == assembly::CodeGenerator::IdentifierContext::RValue)
-			_assembly.append(dupInstruction(stackDiff));
+		if (_context == julia::IdentifierContext::RValue)
+			_assembly.appendInstruction(dupInstruction(stackDiff));
 		else
 		{
-			_assembly.append(swapInstruction(stackDiff));
-			_assembly.append(Instruction::POP);
+			_assembly.appendInstruction(swapInstruction(stackDiff));
+			_assembly.appendInstruction(Instruction::POP);
 		}
-		return true;
 	};
 
-	solAssert(assembly::InlineAssemblyStack().parseAndAssemble(*assembly, *m_asm, identifierAccess), "Failed to assemble inline assembly block.");
+	ErrorList errors;
+	ErrorReporter errorReporter(errors);
+	auto scanner = make_shared<Scanner>(CharStream(_assembly), "--CODEGEN--");
+	auto parserResult = assembly::Parser(errorReporter).parse(scanner);
+	if (!parserResult || !errorReporter.errors().empty())
+	{
+		string message =
+			"Error parsing inline assembly block:\n"
+			"------------------ Input: -----------------\n" +
+			_assembly + "\n"
+			"------------------ Errors: ----------------\n";
+		for (auto const& error: errorReporter.errors())
+			message += SourceReferenceFormatter::formatExceptionInformation(
+				*error,
+				(error->type() == Error::Type::Warning) ? "Warning" : "Error",
+				[&](string const&) -> Scanner const& { return *scanner; }
+			);
+		message += "-------------------------------------------\n";
+
+		solAssert(false, message);
+	}
+
+	assembly::AsmAnalysisInfo analysisInfo;
+	assembly::AsmAnalyzer analyzer(analysisInfo, errorReporter, false, identifierAccess.resolve);
+	solAssert(analyzer.analyze(*parserResult), "Failed to analyze inline assembly block.");
+	solAssert(errorReporter.errors().empty(), "Failed to analyze inline assembly block.");
+	assembly::CodeGenerator::assemble(*parserResult, analysisInfo, *m_asm, identifierAccess, _system);
 }
 
 FunctionDefinition const& CompilerContext::resolveVirtualFunction(

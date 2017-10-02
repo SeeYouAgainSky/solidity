@@ -62,7 +62,7 @@ enum class Instruction: uint8_t
 	NOT,				///< bitwise NOT opertation
 	BYTE,				///< retrieve single byte from word
 
-	SHA3 = 0x20,		///< compute SHA3-256 hash
+	KECCAK256 = 0x20,		///< compute KECCAK-256 hash
 
 	ADDRESS = 0x30,		///< get address of currently executing account
 	BALANCE,			///< get balance of the given account
@@ -77,6 +77,8 @@ enum class Instruction: uint8_t
 	GASPRICE,			///< get price of gas in current environment
 	EXTCODESIZE,		///< get external code size (from another contract)
 	EXTCODECOPY,		///< copy external code (from another contract)
+	RETURNDATASIZE = 0x3d,	///< get size of return data buffer
+	RETURNDATACOPY = 0x3e,	///< copy return data in current environment to memory
 
 	BLOCKHASH = 0x40,	///< get hash of most recent complete block
 	COINBASE,			///< get the block's coinbase address
@@ -171,16 +173,47 @@ enum class Instruction: uint8_t
 	LOG3,				///< Makes a log entry; 3 topics.
 	LOG4,				///< Makes a log entry; 4 topics.
 
+	JUMPTO = 0xb0,      ///< alter the program counter to a jumpdest -- not part of Instructions.cpp
+	JUMPIF,             ///< conditionally alter the program counter -- not part of Instructions.cpp
+	JUMPV,              ///< alter the program counter to a jumpdest -- not part of Instructions.cpp
+	JUMPSUB,            ///< alter the program counter to a beginsub -- not part of Instructions.cpp
+	JUMPSUBV,           ///< alter the program counter to a beginsub -- not part of Instructions.cpp
+	BEGINSUB,           ///< set a potential jumpsub destination -- not part of Instructions.cpp
+	BEGINDATA,          ///< begin the data section -- not part of Instructions.cpp
+	RETURNSUB,          ///< return to subroutine jumped from -- not part of Instructions.cpp
+	PUTLOCAL,           ///< pop top of stack to local variable -- not part of Instructions.cpp
+	GETLOCAL,           ///< push local variable to top of stack -- not part of Instructions.cpp
+
 	CREATE = 0xf0,		///< create a new account with associated code
 	CALL,				///< message-call into an account
 	CALLCODE,			///< message-call with another account's code only
 	RETURN,				///< halt execution returning output data
 	DELEGATECALL,		///< like CALLCODE but keeps caller's value and sender
+	STATICCALL = 0xfa,	///< like CALL but disallow state modifications
+	CREATE2 = 0xfb,		///< create new account with associated code at address `sha3(sender + salt + sha3(init code)) % 2**160`
 
 	REVERT = 0xfd,		///< halt execution, revert state and return output data
 	INVALID = 0xfe,		///< invalid instruction for expressing runtime errors (e.g., division-by-zero)
 	SELFDESTRUCT = 0xff	///< halt execution and register account for later deletion
 };
+
+/// @returns true if the instruction is a PUSH
+inline bool isPushInstruction(Instruction _inst)
+{
+	return Instruction::PUSH1 <= _inst && _inst <= Instruction::PUSH32;
+}
+
+/// @returns true if the instruction is a DUP
+inline bool isDupInstruction(Instruction _inst)
+{
+	return Instruction::DUP1 <= _inst && _inst <= Instruction::DUP16;
+}
+
+/// @returns true if the instruction is a SWAP
+inline bool isSwapInstruction(Instruction _inst)
+{
+	return Instruction::SWAP1 <= _inst && _inst <= Instruction::SWAP16;
+}
 
 /// @returns the number of PUSH Instruction _inst
 inline unsigned getPushNumber(Instruction _inst)
@@ -237,6 +270,8 @@ enum class Tier : unsigned
 	Mid,		// 8, Mid
 	High,		// 10, Slow
 	Ext,		// 20, Ext
+	ExtCode,	// 700, Extcode
+	Balance,	// 400, Balance
 	Special,	// multiparam or otherwise special
 	Invalid		// Invalid.
 };

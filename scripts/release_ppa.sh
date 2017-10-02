@@ -15,6 +15,21 @@
 ## It will clone the Solidity git from github, determine the version,
 ## create a source archive and push it to the ubuntu ppa servers.
 ##
+## This requires the following entries in /etc/dput.cf:
+##
+##  [ethereum-dev]
+##  fqdn			= ppa.launchpad.net
+##  method			= ftp
+##  incoming		= ~ethereum/ethereum-dev
+##  login			= anonymous
+## 
+##  [ethereum]
+##  fqdn			= ppa.launchpad.net
+##  method			= ftp
+##  incoming		= ~ethereum/ethereum
+##  login			= anonymous
+
+##
 ##############################################################################
 
 set -ev
@@ -28,10 +43,10 @@ fi
 
 if [ "$branch" = develop ]
 then
-    pparepo=ethereum/ethereum-dev
+    pparepo=ethereum-dev
     ppafilesurl=https://launchpad.net/~ethereum/+archive/ubuntu/ethereum-dev/+files
 else
-    pparepo=ethereum/ethereum
+    pparepo=ethereum
     ppafilesurl=https://launchpad.net/~ethereum/+archive/ubuntu/ethereum/+files
 fi
 
@@ -39,14 +54,24 @@ keyid=703F83D0
 email=builds@ethereum.org
 packagename=solc
 
-for distribution in trusty vivid wily xenial yakkety
+for distribution in trusty vivid xenial zesty
 do
 cd /tmp/
+rm -rf $distribution
 mkdir $distribution
 cd $distribution
 
+# Dependency
+if [ $distribution = trusty -o $distribution = vivid ]
+then
+    Z3DEPENDENCY=""
+else
+    Z3DEPENDENCY="libz3-dev,
+               "
+fi
+
 # Fetch source
-git clone --recursive https://github.com/ethereum/solidity.git -b "$branch"
+git clone --depth 2 --recursive https://github.com/ethereum/solidity.git -b "$branch"
 mv solidity solc
 
 # Fetch jsoncpp dependency
@@ -55,10 +80,10 @@ wget -O ./solc/deps/downloads/jsoncpp-1.7.7.tar.gz https://github.com/open-sourc
 
 # Determine version
 cd solc
-version=`grep -oP "PROJECT_VERSION \"?\K[0-9.]+(?=\")"? CMakeLists.txt`
-commithash=`git rev-parse --short=8 HEAD`
-committimestamp=`git show --format=%ci HEAD | head -n 1`
-commitdate=`git show --format=%ci HEAD | head -n 1 | cut - -b1-10 | sed -e 's/-0?/./' | sed -e 's/-0?/./'`
+version=$($(dirname "$0")/get_version.sh)
+commithash=$(git rev-parse --short=8 HEAD)
+committimestamp=$(git show --format=%ci HEAD | head -n 1)
+commitdate=$(git show --format=%ci HEAD | head -n 1 | cut - -b1-10 | sed -e 's/-0?/./' | sed -e 's/-0?/./')
 
 echo "$commithash" > commit_hash.txt
 if [ $branch = develop ]
@@ -87,7 +112,7 @@ Source: solc
 Section: science
 Priority: extra
 Maintainer: Christian (Buildserver key) <builds@ethereum.org>
-Build-Depends: debhelper (>= 9.0.0),
+Build-Depends: ${Z3DEPENDENCY}debhelper (>= 9.0.0),
                cmake,
                g++-4.8,
                git,
@@ -192,7 +217,8 @@ EMAIL="$email" dch -v 1:${debversion}-${versionsuffix} "git build of ${commithas
 # build source package
 # If packages is rejected because original source is already present, add
 # -sd to remove it from the .changes file
-debuild -S -sa -us -uc
+# -d disables the build dependencies check
+debuild -S -d -sa -us -uc
 
 # prepare .changes file for Launchpad
 sed -i -e s/UNRELEASED/${distribution}/ -e s/urgency=medium/urgency=low/ ../*.changes
@@ -223,6 +249,6 @@ fi
 debsign --re-sign -k ${keyid} ../${packagename}_${debversion}-${versionsuffix}_source.changes
 
 # upload
-dput ppa:${pparepo} ../${packagename}_${debversion}-${versionsuffix}_source.changes
+dput ${pparepo} ../${packagename}_${debversion}-${versionsuffix}_source.changes
 
 done

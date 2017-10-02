@@ -32,18 +32,18 @@ namespace solidity
  * The module that performs syntax analysis on the AST:
  *  - whether continue/break is in a for/while loop.
  *  - whether a modifier contains at least one '_'
+ *  - issues deprecation warnings for unary '+'
+ *  - issues deprecation warning for throw
  */
 class SyntaxChecker: private ASTConstVisitor
 {
 public:
 	/// @param _errors the reference to the list of errors and warnings to add them found during type checking.
-	SyntaxChecker(ErrorList& _errors): m_errors(_errors) {}
+	SyntaxChecker(ErrorReporter& _errorReporter): m_errorReporter(_errorReporter) {}
 
 	bool checkSyntax(ASTNode const& _astRoot);
 
 private:
-	/// Adds a new error to the list of errors.
-	void syntaxError(SourceLocation const& _location, std::string const& _description);
 
 	virtual bool visit(SourceUnit const& _sourceUnit) override;
 	virtual void endVisit(SourceUnit const& _sourceUnit) override;
@@ -60,9 +60,16 @@ private:
 	virtual bool visit(Continue const& _continueStatement) override;
 	virtual bool visit(Break const& _breakStatement) override;
 
+	virtual bool visit(Throw const& _throwStatement) override;
+
+	virtual bool visit(UnaryOperation const& _operation) override;
+
 	virtual bool visit(PlaceholderStatement const& _placeholderStatement) override;
 
-	ErrorList& m_errors;
+	virtual bool visit(FunctionDefinition const& _function) override;
+	virtual bool visit(FunctionTypeName const& _node) override;
+
+	ErrorReporter& m_errorReporter;
 
 	/// Flag that indicates whether a function modifier actually contains '_'.
 	bool m_placeholderFound = false;
@@ -71,6 +78,8 @@ private:
 	bool m_versionPragmaFound = false;
 
 	int m_inLoopDepth = 0;
+
+	SourceUnit const* m_sourceUnit = nullptr;
 };
 
 }
